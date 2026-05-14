@@ -44,6 +44,7 @@ commands:
   new --title T --reporter R --assignee A [--body B]
                                         create a new ticket
   show <id>                             show one ticket by id
+  status <id> <new-status>              set status: open|in-progress|done|closed
 EOF
   exit 1
 }
@@ -116,6 +117,10 @@ case "$cmd" in
   show)
     [ $# -lt 1 ] && usage
     state=$(build_state show raw:id "$1")
+    ;;
+  status)
+    [ $# -lt 2 ] && usage
+    state=$(build_state status raw:id "$1" status "$2")
     ;;
   *)
     usage

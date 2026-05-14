@@ -165,6 +165,7 @@ fn run(req: &CliCommand) -> Result<(), String> {
         "list" => run_list(req),
         "new" => run_new(req),
         "show" => run_show(req),
+        "status" => run_status(req),
         other => Err(format!("unknown cmd: {}", other)),
     }
 }
@@ -243,10 +244,32 @@ fn run_show(req: &CliCommand) -> Result<(), String> {
     out(&format!("title:    {}\n", t.title));
     out(&format!("reporter: {}\n", t.reporter));
     out(&format!("assignee: {}\n", t.assignee));
-    out(&format!("created:  {}\n", t.created_at));
+    out(&format!("created:  {}\n", epoch_ms_to_iso8601(t.created_at)));
     out("\n");
     out(&t.body);
     out("\n");
+    Ok(())
+}
+
+fn run_status(req: &CliCommand) -> Result<(), String> {
+    let id = req.id.ok_or("status: --id required")?;
+    let status = req.status.as_ref().ok_or("status: --status required")?;
+
+    #[derive(Serialize)]
+    struct StatusBody<'a> {
+        status: &'a str,
+    }
+    let body_json = serde_json::to_string(&StatusBody { status })
+        .map_err(|e| format!("encode body: {}", e))?;
+
+    let path = format!("/v1/tickets/{}/status", id);
+    let resp = http(req, "POST", &path, Some(&body_json))?;
+    let t: Ticket = serde_json::from_str(&resp)
+        .map_err(|e| format!("parse status response: {}", e))?;
+    out(&format!(
+        "updated #{}  [{}]  {}  (reporter={}, assignee={})\n",
+        t.id, t.status, t.title, t.reporter, t.assignee
+    ));
     Ok(())
 }
 
@@ -327,7 +350,31 @@ fn http(req: &CliCommand, method: &str, path: &str, body: Option<&str>) -> Resul
         Some(n) if n != usize::MAX => start + n.min(text.len() - start),
         _ => text.len(),
     };
-    Ok(text[start..end].to_string())
+    let resp_body = text[start..end].to_string();
+
+    // Surface non-2xx as Err so callers don't try to JSON-decode error bodies as
+    // success types. Preserve the server's error body verbatim — it's already
+    // shaped like {"error":"..."}.
+    let status_line = text.lines().next().unwrap_or("");
+    let mut parts = status_line.split_whitespace();
+    let _http_version = parts.next();
+    let status_code: u16 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    if !(200..300).contains(&status_code) {
+        let detail = extract_error_message(&resp_body).unwrap_or(resp_body);
+        return Err(format!("HTTP {}: {}", status_code, detail));
+    }
+
+    Ok(resp_body)
+}
+
+/// Pull the "error" field out of `{"error":"..."}` without depending on serde for
+/// such a thin shape. Returns None if the body doesn't match.
+fn extract_error_message(body: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct ErrBody {
+        error: String,
+    }
+    serde_json::from_str::<ErrBody>(body).ok().map(|e| e.error)
 }
 
 fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -347,6 +394,35 @@ fn out(s: &str) {
 
 fn err(s: &str) {
     let _ = write_stderr(s.as_bytes().to_vec());
+}
+
+/// Render epoch milliseconds (UTC) as ISO-8601 "YYYY-MM-DDTHH:MM:SSZ".
+/// Uses Hinnant's civil-from-days algorithm; valid for u64 ms (≈ year 1970 onward).
+fn epoch_ms_to_iso8601(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days = secs / 86400;
+    let tod = secs % 86400;
+    let hour = tod / 3600;
+    let minute = (tod % 3600) / 60;
+    let second = tod % 60;
+
+    let z: u64 = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut year = (yoe as i64) + (era as i64) * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, minute, second
+    )
 }
 
 fn url_encode(s: &str) -> String {
