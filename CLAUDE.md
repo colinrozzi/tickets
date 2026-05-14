@@ -105,24 +105,24 @@ gh pr merge <N> --auto --squash
 ### Build cycle
 
 ```sh
-nix build .#default .#theater
+nix build .#default
+nix build .#theater -o result-theater
 ```
 
 Outputs:
 - `result/` — three wasm actors (`tickets_acceptor.wasm`, `tickets_handler.wasm`, `tickets_cli.wasm`)
-- `result-1/bin/theater` (or `result-theater/bin/theater`) — the theater binary
+- `result-theater/bin/theater` — the theater binary
 
 To run locally:
 ```sh
-mkdir -p /var/lib/tickets/store
-./result-1/bin/theater start acceptor/manifest.toml
+./result-theater/bin/theater start acceptor/manifest.toml
 ```
 
-State persists across restarts via `theater:simple/store` at `/var/lib/tickets/store`.
+State persists across restarts via `theater:simple/store` at `./.store/tickets/` (repo-local, auto-created on first run).
 
 ### No remote deploy
 
-Unlike inbox, tickets runs locally on Colin's dev machine. No Linode, no nix-copy, no systemd, no GC roots. Just `nix build && ./result-1/bin/theater start ...`.
+Unlike inbox, tickets runs locally on Colin's dev machine. No Linode, no nix-copy, no systemd, no GC roots. Just `nix build && ./result-theater/bin/theater start ...`.
 
 ### Theater dependency
 
@@ -161,7 +161,8 @@ Honest scope estimates: if a "small fix" grows, email the new estimate as soon a
 
 Document these in PR descriptions when adjacent code is touched; pick them off as later phases land.
 
-- Ticket-create has a TOCTOU race: handler reads `tickets-list`, computes next id, writes back. Two simultaneous creates can collide. Phase 2 fixes this with a singleton `tickets-actor` that mediates writes.
-- No status transitions yet — all tickets are created `open` and stay that way. Comments + status are phase 2.
+- Ticket-create and status transitions have a TOCTOU race: handler reads `tickets-list`, mutates, writes back. Two simultaneous writes can collide. Phase 2 / part 2 fixes this with a singleton `tickets-actor` that mediates writes.
+- No comments yet — phase 2 / part 2.
+- No workflow enforcement on status transitions — any-to-any is allowed in phase 2 / part 1; we may tighten to `open → in-progress → done` (with re-open) later.
 - No TLS on `:8443`. Local-only deployment; if this ever leaves localhost the manifest needs a `server_tls` block.
 - Auth is a single shared token. Phase 3 introduces per-user tokens (each agent gets its own).

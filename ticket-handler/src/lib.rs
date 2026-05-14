@@ -7,6 +7,7 @@
 //!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=)
 //!   POST /v1/tickets                                    → create
 //!   GET  /v1/tickets/<id>                               → show one
+//!   POST /v1/tickets/<id>/status                        → set status
 
 #![no_std]
 extern crate alloc;
@@ -103,10 +104,17 @@ struct NewTicketRequest {
     assignee: String,
 }
 
+#[derive(Deserialize)]
+struct SetStatusRequest {
+    status: String,
+}
+
 #[derive(Serialize)]
 struct TicketsList {
     tickets: Vec<Ticket>,
 }
+
+const VALID_STATUSES: &[&str] = &["open", "in-progress", "done", "closed"];
 
 // ============================================================================
 // Actor entry points
@@ -162,8 +170,18 @@ fn route(request: &[u8]) -> Vec<u8> {
         ("GET", "/v1/tickets") => handle_list(query),
         ("POST", "/v1/tickets") => handle_create(request_str),
         ("GET", p) if p.starts_with("/v1/tickets/") => {
-            let id_str = &p["/v1/tickets/".len()..];
-            handle_show(id_str)
+            let rest = &p["/v1/tickets/".len()..];
+            if rest.is_empty() || rest.contains('/') {
+                return http_response(404, br#"{"error":"not found"}"#.to_vec());
+            }
+            handle_show(rest)
+        }
+        ("POST", p) if p.starts_with("/v1/tickets/") && p.ends_with("/status") => {
+            let id_str = &p["/v1/tickets/".len()..p.len() - "/status".len()];
+            if id_str.is_empty() || id_str.contains('/') {
+                return http_response(404, br#"{"error":"not found"}"#.to_vec());
+            }
+            handle_set_status(id_str, request_str)
         }
         _ => http_response(404, br#"{"error":"not found"}"#.to_vec()),
     }
@@ -276,6 +294,46 @@ fn handle_create(request_str: &str) -> Vec<u8> {
 
     let body = serde_json::to_vec(&new).unwrap_or_default();
     http_response(201, body)
+}
+
+fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
+    let id: u64 = match id_str.parse() {
+        Ok(n) => n,
+        Err(_) => return http_response(400, br#"{"error":"invalid ticket id"}"#.to_vec()),
+    };
+
+    let body = match request_str.find("\r\n\r\n") {
+        Some(i) => &request_str[i + 4..],
+        None => return http_response(400, br#"{"error":"missing body"}"#.to_vec()),
+    };
+
+    let req: SetStatusRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!(r#"{{"error":"bad request body: {}"}}"#, e);
+            return http_response(400, msg.into_bytes());
+        }
+    };
+
+    if !VALID_STATUSES.iter().any(|s| *s == req.status) {
+        let msg = format!(
+            r#"{{"error":"invalid status {:?}; valid values: open, in-progress, done, closed"}}"#,
+            req.status
+        );
+        return http_response(400, msg.into_bytes());
+    }
+
+    let mut all = load_tickets();
+    let idx = match all.iter().position(|t| t.id == id) {
+        Some(i) => i,
+        None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
+    };
+    all[idx].status = req.status;
+    let updated = all[idx].clone();
+    save_tickets(&all);
+
+    let body = serde_json::to_vec(&updated).unwrap_or_default();
+    http_response(200, body)
 }
 
 // ============================================================================
