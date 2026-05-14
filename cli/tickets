@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# tickets — ergonomic client to the local tickets server.
+#
+# Configuration:
+#   TICKETS_API      hostname:port (default: 127.0.0.1:8443)
+#   TICKETS_TOKEN    bearer token; required
+#                    (alternative: ~/.config/tickets/token, single line)
+#   TICKETS_THEATER  path to the theater binary
+#                    (default: alongside this script, or `theater` on PATH)
+#   TICKETS_WASM     path to tickets_cli.wasm
+#                    (default: ./result/tickets_cli.wasm next to the repo)
+
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/.." && pwd)
+
+TICKETS_API=${TICKETS_API:-127.0.0.1:8443}
+
+if [ -z "${TICKETS_TOKEN:-}" ] && [ -f "$HOME/.config/tickets/token" ]; then
+  TICKETS_TOKEN=$(< "$HOME/.config/tickets/token")
+fi
+
+TICKETS_THEATER=${TICKETS_THEATER:-}
+if [ -z "$TICKETS_THEATER" ]; then
+  for candidate in "$repo/result-theater/bin/theater" "$repo/result-1/bin/theater" "$repo/result/bin/theater" "$(command -v theater 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      TICKETS_THEATER=$candidate
+      break
+    fi
+  done
+fi
+[ -z "$TICKETS_THEATER" ] && { echo "tickets: cant find theater binary (set TICKETS_THEATER)" >&2; exit 2; }
+
+TICKETS_WASM=${TICKETS_WASM:-"$repo/result/tickets_cli.wasm"}
+[ ! -f "$TICKETS_WASM" ] && { echo "tickets: cant find $TICKETS_WASM (run nix build)" >&2; exit 2; }
+
+usage() {
+  cat >&2 <<EOF
+usage: tickets <command> [args]
+
+commands:
+  list [--status S] [--assignee A]      list tickets, optionally filtered
+  new --title T --reporter R --assignee A [--body B]
+                                        create a new ticket
+  show <id>                             show one ticket by id
+EOF
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+cmd=$1; shift
+
+# Escape a string for JSON.
+json_escape() {
+  awk 'BEGIN {
+    while ((getline line < "/dev/stdin") > 0) {
+      if (NR > 1) printf "\\n"
+      gsub(/\\/, "\\\\", line)
+      gsub(/"/, "\\\"", line)
+      gsub(/\t/, "\\t", line)
+      gsub(/\r/, "\\r", line)
+      printf "%s", line
+    }
+  }' <<<"$1"
+}
+
+build_state() {
+  local cmd=$1; shift
+  local args=("\"cmd\":\"$cmd\"")
+  args+=("\"api\":\"$(json_escape "$TICKETS_API")\"")
+  args+=("\"token\":\"$(json_escape "${TICKETS_TOKEN:-}")\"")
+  while [ $# -gt 0 ]; do
+    local key=$1 val=$2; shift 2
+    if [[ "$key" == raw:* ]]; then
+      args+=("\"${key#raw:}\":$val")
+    else
+      args+=("\"$key\":\"$(json_escape "$val")\"")
+    fi
+  done
+  local IFS=,
+  printf '{%s}' "${args[*]}"
+}
+
+case "$cmd" in
+  list)
+    status= assignee=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --status) status=$2; shift 2 ;;
+        --assignee) assignee=$2; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    args=()
+    [ -n "$status" ] && args+=(status "$status")
+    [ -n "$assignee" ] && args+=(assignee "$assignee")
+    state=$(build_state list "${args[@]+"${args[@]}"}")
+    ;;
+  new)
+    title= body= reporter= assignee=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --title) title=$2; shift 2 ;;
+        --body) body=$2; shift 2 ;;
+        --reporter) reporter=$2; shift 2 ;;
+        --assignee) assignee=$2; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [ -z "$title" ] && { echo "new: --title required" >&2; exit 2; }
+    [ -z "$reporter" ] && { echo "new: --reporter required" >&2; exit 2; }
+    [ -z "$assignee" ] && { echo "new: --assignee required" >&2; exit 2; }
+    state=$(build_state new title "$title" body "$body" reporter "$reporter" assignee "$assignee")
+    ;;
+  show)
+    [ $# -lt 1 ] && usage
+    state=$(build_state show raw:id "$1")
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/manifest.toml" <<EOF
+name = "tickets-cli"
+version = "0.1.0"
+package = "$TICKETS_WASM"
+initial_state = """$state"""
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "tcp"
+
+[[handler]]
+type = "terminal"
+EOF
+
+exec "$TICKETS_THEATER" start "$tmp/manifest.toml"

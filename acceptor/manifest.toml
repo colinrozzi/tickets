@@ -1,0 +1,21 @@
+name = "tickets-acceptor"
+version = "0.1.0"
+package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_acceptor.wasm"
+initial_state = "dev-token-change-me"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "tcp"
+
+[[handler]]
+type = "supervisor"
+
+[[handler]]
+type = "rpc"
+
+[[handler]]
+type = "store"
+base_path = "/home/colin/work/actors/tickets/.store"
+store_id = "tickets"

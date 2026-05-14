@@ -1,0 +1,11 @@
+[package]
+name = "tickets-acceptor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tickets_acceptor"
+crate-type = ["cdylib"]
+
+[dependencies]
+packr-guest = { version = "0.5.5", features = ["derive"] }

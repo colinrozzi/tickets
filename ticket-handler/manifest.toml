@@ -1,0 +1,14 @@
+name = "tickets-handler"
+version = "0.1.0"
+package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_handler.wasm"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "tcp"
+
+[[handler]]
+type = "store"
+base_path = "/home/colin/work/actors/tickets/.store"
+store_id = "tickets"

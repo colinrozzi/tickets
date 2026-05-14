@@ -1,0 +1,12 @@
+name = "tickets-cli"
+version = "0.1.0"
+package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_cli.wasm"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "tcp"
+
+[[handler]]
+type = "terminal"
