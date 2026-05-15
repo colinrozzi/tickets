@@ -53,10 +53,13 @@ EOF
 [ $# -lt 1 ] && usage
 cmd=$1; shift
 
-# Escape a string for JSON.
+# Escape a string for JSON. `getline line` reads from stdin and updates NR,
+# so the multi-line separator below fires correctly. (Earlier
+# `getline … < "/dev/stdin"` did not update NR and silently flattened
+# multi-line bodies to one line — same bug inbox-cli fixed in inbox PR #9.)
 json_escape() {
   awk 'BEGIN {
-    while ((getline line < "/dev/stdin") > 0) {
+    while ((getline line) > 0) {
       if (NR > 1) printf "\\n"
       gsub(/\\/, "\\\\", line)
       gsub(/"/, "\\\"", line)
@@ -149,7 +152,11 @@ cat > "$tmp/manifest.toml" <<EOF
 name = "tickets-cli"
 version = "0.1.0"
 package = "$TICKETS_WASM"
-initial_state = """$state"""
+# TOML literal multi-line strings ('''…''') don't process escape sequences,
+# so the embedded JSON survives byte-for-byte. (Multi-line basic strings
+# """…""" would eat \" and \\, corrupting JSON-escaped payloads — same
+# bug inbox-cli fixed in inbox PR #9.)
+initial_state = '''$state'''
 
 [[handler]]
 type = "runtime"
