@@ -129,6 +129,8 @@ struct CliCommand {
     assignee: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
 }
 
 fn default_api() -> String {
@@ -148,6 +150,15 @@ struct Ticket {
     assignee: String,
     status: String,
     created_at: u64,
+    #[serde(default)]
+    comments: Vec<Comment>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct Comment {
+    author: String,
+    body: String,
+    created_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -166,6 +177,7 @@ fn run(req: &CliCommand) -> Result<(), String> {
         "new" => run_new(req),
         "show" => run_show(req),
         "status" => run_status(req),
+        "comment" => run_comment(req),
         other => Err(format!("unknown cmd: {}", other)),
     }
 }
@@ -248,6 +260,50 @@ fn run_show(req: &CliCommand) -> Result<(), String> {
     out("\n");
     out(&t.body);
     out("\n");
+    if !t.comments.is_empty() {
+        out("\n--- comments ---\n");
+        for c in &t.comments {
+            out(&format!(
+                "{}  {}\n",
+                epoch_ms_to_iso8601(c.created_at),
+                c.author
+            ));
+            for line in c.body.split('\n') {
+                out(&format!("  {}\n", line));
+            }
+            out("\n");
+        }
+    }
+    Ok(())
+}
+
+fn run_comment(req: &CliCommand) -> Result<(), String> {
+    let id = req.id.ok_or("comment: --id required")?;
+    let author = req.author.as_ref().ok_or("comment: --author required")?;
+    let body_text = req.body.as_ref().ok_or("comment: --body required")?;
+
+    #[derive(Serialize)]
+    struct CommentBody<'a> {
+        author: &'a str,
+        body: &'a str,
+    }
+    let body_json = serde_json::to_string(&CommentBody {
+        author,
+        body: body_text,
+    })
+    .map_err(|e| format!("encode body: {}", e))?;
+
+    let path = format!("/v1/tickets/{}/comment", id);
+    let resp = http(req, "POST", &path, Some(&body_json))?;
+    let t: Ticket = serde_json::from_str(&resp)
+        .map_err(|e| format!("parse comment response: {}", e))?;
+    out(&format!(
+        "commented on #{}  [{}]  {}  ({} comments)\n",
+        t.id,
+        t.status,
+        t.title,
+        t.comments.len()
+    ));
     Ok(())
 }
 

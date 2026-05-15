@@ -45,6 +45,7 @@ commands:
                                         create a new ticket
   show <id>                             show one ticket by id
   status <id> <new-status>              set status: open|in-progress|done|closed
+  comment <id> --author A --body B      append a comment to a ticket
 EOF
   exit 1
 }
@@ -121,6 +122,21 @@ case "$cmd" in
   status)
     [ $# -lt 2 ] && usage
     state=$(build_state status raw:id "$1" status "$2")
+    ;;
+  comment)
+    [ $# -lt 1 ] && usage
+    id=$1; shift
+    author= body=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --author) author=$2; shift 2 ;;
+        --body) body=$2; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [ -z "$author" ] && { echo "comment: --author required" >&2; exit 2; }
+    [ -z "$body" ] && { echo "comment: --body required" >&2; exit 2; }
+    state=$(build_state comment raw:id "$id" author "$author" body "$body")
     ;;
   *)
     usage

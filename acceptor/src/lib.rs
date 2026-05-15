@@ -1,9 +1,16 @@
 //! Tickets acceptor.
 //!
-//! On startup: persists the bearer token (passed via initial_state) into the
-//! shared store, binds the listen socket.
+//! On startup: parses the JSON `initial_state` config, persists the
+//! tickets API bearer token + inbox API endpoint + inbox bearer token into
+//! the shared store under labels, then binds the listen socket.
+//!
 //! On each TCP connection: spawns a per-connection ticket-handler, transfers
 //! the connection.
+//!
+//! Expected `initial_state` shape (single JSON string):
+//!   {"api_token": "<tickets bearer>",
+//!    "inbox_api": "host:port",
+//!    "inbox_token": "<inbox bearer>"}
 
 #![no_std]
 extern crate alloc;
@@ -12,6 +19,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use packr_guest::{export, import, pack_types, GraphValue, Value};
+use serde::Deserialize;
 
 packr_guest::setup_guest!();
 
@@ -79,27 +87,48 @@ const HANDLER_MANIFEST: &str =
 
 const STORE_ID: &str = "tickets";
 const BEARER_TOKEN_LABEL: &str = "api-bearer-token";
+const INBOX_API_LABEL: &str = "inbox-api";
+const INBOX_TOKEN_LABEL: &str = "inbox-token";
+
+#[derive(Deserialize)]
+struct Config {
+    /// Bearer token clients send to the tickets HTTP API.
+    api_token: String,
+    /// Host:port of the inbox HTTP API (e.g. "mail.colinrozzi.com:443"). The
+    /// handler uses this to POST notification emails when tickets change.
+    inbox_api: String,
+    /// Bearer token the handler presents when calling the inbox API.
+    inbox_token: String,
+}
 
 #[export(name = "theater:simple/actor.init")]
 fn init(state: Value) -> Result<(AcceptorState, ()), String> {
     log(String::from("[tickets-acceptor] init"));
 
-    // initial_state is the bearer token (single line). Persist it to the
-    // shared store so per-connection handlers can fetch it on demand.
-    let bearer_token = match state {
+    let raw = match state {
         Value::String(s) if !s.is_empty() => s,
         _ => {
             return Err(String::from(
-                "acceptor needs initial_state = \"<bearer-token>\" in manifest",
+                "acceptor: initial_state must be a JSON config string \
+                 with {api_token, inbox_api, inbox_token}",
             ))
         }
     };
-    store_store_at_label(
-        String::from(STORE_ID),
-        String::from(BEARER_TOKEN_LABEL),
-        bearer_token.into_bytes(),
-    )
-    .map_err(|e| format!("persist bearer token failed: {}", e))?;
+    let cfg: Config = serde_json::from_str(&raw)
+        .map_err(|e| format!("acceptor: bad initial_state JSON: {}", e))?;
+    if cfg.api_token.is_empty() {
+        return Err(String::from("acceptor: api_token must be non-empty"));
+    }
+    if cfg.inbox_api.is_empty() {
+        return Err(String::from("acceptor: inbox_api must be non-empty"));
+    }
+    if cfg.inbox_token.is_empty() {
+        return Err(String::from("acceptor: inbox_token must be non-empty"));
+    }
+
+    persist(BEARER_TOKEN_LABEL, cfg.api_token)?;
+    persist(INBOX_API_LABEL, cfg.inbox_api)?;
+    persist(INBOX_TOKEN_LABEL, cfg.inbox_token)?;
 
     let listener_id = tcp_listen(String::from(LISTEN_ADDR))
         .map_err(|e| format!("listen failed: {}", e))?;
@@ -115,6 +144,16 @@ fn init(state: Value) -> Result<(AcceptorState, ()), String> {
         },
         (),
     ))
+}
+
+fn persist(label: &str, value: String) -> Result<(), String> {
+    store_store_at_label(
+        String::from(STORE_ID),
+        String::from(label),
+        value.into_bytes(),
+    )
+    .map(|_| ())
+    .map_err(|e| format!("persist {} failed: {}", label, e))
 }
 
 #[export(name = "theater:simple/tcp-client.handle-connection")]

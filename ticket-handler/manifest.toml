@@ -8,6 +8,9 @@ type = "runtime"
 [[handler]]
 type = "tcp"
 
+[handler.client_tls]
+enabled = true
+
 [[handler]]
 type = "store"
 base_path = "/home/colin/work/actors/tickets/.store"

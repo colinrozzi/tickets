@@ -1,7 +1,13 @@
 name = "tickets-acceptor"
 version = "0.1.0"
 package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_acceptor.wasm"
-initial_state = "dev-token-change-me"
+# initial_state is a JSON blob (replace at deploy time):
+#   {
+#     "api_token":   "<tickets HTTP API bearer>",
+#     "inbox_api":   "mail.colinrozzi.com:443",
+#     "inbox_token": "<inbox API bearer for tickets@colinrozzi.com>"
+#   }
+initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\"}"
 
 [[handler]]
 type = "runtime"

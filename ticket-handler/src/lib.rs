@@ -8,6 +8,11 @@
 //!   POST /v1/tickets                                    → create
 //!   GET  /v1/tickets/<id>                               → show one
 //!   POST /v1/tickets/<id>/status                        → set status
+//!   POST /v1/tickets/<id>/comment                       → append a comment
+//!
+//! On create / status-change / new-comment the handler also fires a
+//! best-effort notification email to the relevant ticket participants via
+//! the inbox HTTP API (TLS POST to /v1/mailboxes/<rcpt>/messages).
 
 #![no_std]
 extern crate alloc;
@@ -31,6 +36,7 @@ pack_types! {
             shutdown: func(data: option<list<u8>>) -> result<_, string>,
         }
         theater:simple/tcp {
+            connect: func(address: string) -> result<string, string>,
             receive: func(connection-id: string, max-bytes: u32) -> result<list<u8>, string>,
             send: func(connection-id: string, data: list<u8>) -> result<u64, string>,
             close: func(connection-id: string) -> result<_, string>,
@@ -56,6 +62,9 @@ fn log(msg: String);
 #[import(module = "theater:simple/runtime", name = "shutdown")]
 fn shutdown(data: Option<Vec<u8>>) -> Result<(), String>;
 
+#[import(module = "theater:simple/tcp", name = "connect")]
+fn tcp_connect(address: String) -> Result<String, String>;
+
 #[import(module = "theater:simple/tcp", name = "receive")]
 fn tcp_receive(connection_id: String, max_bytes: u32) -> Result<Vec<u8>, String>;
 
@@ -79,7 +88,10 @@ fn timer_now() -> u64;
 
 const STORE_ID: &str = "tickets";
 const BEARER_TOKEN_LABEL: &str = "api-bearer-token";
+const INBOX_API_LABEL: &str = "inbox-api";
+const INBOX_TOKEN_LABEL: &str = "inbox-token";
 const TICKETS_LIST_LABEL: &str = "tickets-list";
+const NOTIFY_FROM: &str = "tickets@colinrozzi.com";
 
 // ============================================================================
 // Data types
@@ -93,6 +105,17 @@ struct Ticket {
     reporter: String,
     assignee: String,
     status: String,
+    created_at: u64,
+    /// Append-only comment thread. Older stored tickets (pre phase-2 part-2)
+    /// won't have this field — `default` makes them deserialize as empty.
+    #[serde(default)]
+    comments: Vec<Comment>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Comment {
+    author: String,
+    body: String,
     created_at: u64,
 }
 
@@ -109,9 +132,23 @@ struct SetStatusRequest {
     status: String,
 }
 
+#[derive(Deserialize)]
+struct NewCommentRequest {
+    author: String,
+    body: String,
+}
+
 #[derive(Serialize)]
 struct TicketsList {
     tickets: Vec<Ticket>,
+}
+
+#[derive(Serialize)]
+struct InboxMessage<'a> {
+    from: &'a str,
+    to: &'a str,
+    subject: &'a str,
+    body: &'a str,
 }
 
 const VALID_STATUSES: &[&str] = &["open", "in-progress", "done", "closed"];
@@ -182,6 +219,13 @@ fn route(request: &[u8]) -> Vec<u8> {
                 return http_response(404, br#"{"error":"not found"}"#.to_vec());
             }
             handle_set_status(id_str, request_str)
+        }
+        ("POST", p) if p.starts_with("/v1/tickets/") && p.ends_with("/comment") => {
+            let id_str = &p["/v1/tickets/".len()..p.len() - "/comment".len()];
+            if id_str.is_empty() || id_str.contains('/') {
+                return http_response(404, br#"{"error":"not found"}"#.to_vec());
+            }
+            handle_add_comment(id_str, request_str)
         }
         _ => http_response(404, br#"{"error":"not found"}"#.to_vec()),
     }
@@ -288,9 +332,12 @@ fn handle_create(request_str: &str) -> Vec<u8> {
         assignee: req.assignee,
         status: String::from("open"),
         created_at: timer_now(),
+        comments: Vec::new(),
     };
     all.push(new.clone());
     save_tickets(&all);
+
+    notify_created(&new);
 
     let body = serde_json::to_vec(&new).unwrap_or_default();
     http_response(201, body)
@@ -328,12 +375,57 @@ fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
         Some(i) => i,
         None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
     };
+    let old_status = all[idx].status.clone();
     all[idx].status = req.status;
     let updated = all[idx].clone();
     save_tickets(&all);
 
+    notify_status_changed(&updated, &old_status);
+
     let body = serde_json::to_vec(&updated).unwrap_or_default();
     http_response(200, body)
+}
+
+fn handle_add_comment(id_str: &str, request_str: &str) -> Vec<u8> {
+    let id: u64 = match id_str.parse() {
+        Ok(n) => n,
+        Err(_) => return http_response(400, br#"{"error":"invalid ticket id"}"#.to_vec()),
+    };
+
+    let body = match request_str.find("\r\n\r\n") {
+        Some(i) => &request_str[i + 4..],
+        None => return http_response(400, br#"{"error":"missing body"}"#.to_vec()),
+    };
+
+    let req: NewCommentRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!(r#"{{"error":"bad request body: {}"}}"#, e);
+            return http_response(400, msg.into_bytes());
+        }
+    };
+    if req.author.is_empty() || req.body.is_empty() {
+        return http_response(400, br#"{"error":"author and body are required"}"#.to_vec());
+    }
+
+    let mut all = load_tickets();
+    let idx = match all.iter().position(|t| t.id == id) {
+        Some(i) => i,
+        None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
+    };
+    let comment = Comment {
+        author: req.author,
+        body: req.body,
+        created_at: timer_now(),
+    };
+    all[idx].comments.push(comment.clone());
+    let updated = all[idx].clone();
+    save_tickets(&all);
+
+    notify_comment_added(&updated, &comment);
+
+    let body = serde_json::to_vec(&updated).unwrap_or_default();
+    http_response(201, body)
 }
 
 // ============================================================================
@@ -376,6 +468,23 @@ fn parse_query(query: &str) -> (Option<String>, Option<String>) {
     (status, assignee)
 }
 
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        let ok = byte.is_ascii_alphanumeric()
+            || byte == b'-'
+            || byte == b'.'
+            || byte == b'_'
+            || byte == b'~';
+        if ok {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    out
+}
+
 fn url_decode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -408,6 +517,183 @@ fn hex_digit(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+// ============================================================================
+// Email bridge — best-effort outbound POST to the inbox API.
+// ============================================================================
+
+fn notify_created(t: &Ticket) {
+    let subject = format!("[ticket #{}] {}", t.id, t.title);
+    let body = format!(
+        "{}\n\n— reporter: {}\n— assignee: {}",
+        t.body, t.reporter, t.assignee
+    );
+    deliver(&t.assignee, &subject, &body);
+    if t.reporter != t.assignee {
+        deliver(&t.reporter, &subject, &body);
+    }
+}
+
+fn notify_status_changed(t: &Ticket, old_status: &str) {
+    let subject = format!("[ticket #{}] status: {} -> {}", t.id, old_status, t.status);
+    let body = format!(
+        "Ticket {:?} moved from {} to {}.\n\n— reporter: {}\n— assignee: {}",
+        t.title, old_status, t.status, t.reporter, t.assignee
+    );
+    deliver(&t.reporter, &subject, &body);
+    if t.assignee != t.reporter {
+        deliver(&t.assignee, &subject, &body);
+    }
+}
+
+fn notify_comment_added(t: &Ticket, c: &Comment) {
+    let subject = format!("[ticket #{}] new comment from {}", t.id, c.author);
+    let body = format!(
+        "{}\n\n— author: {}\n— ticket: {} (status: {})",
+        c.body, c.author, t.title, t.status
+    );
+    // Reporter + assignee, deduped, minus the comment author (no self-notify).
+    let mut sent_to: Vec<&str> = Vec::new();
+    for recipient in [t.reporter.as_str(), t.assignee.as_str()] {
+        if recipient.is_empty() || recipient == c.author {
+            continue;
+        }
+        if sent_to.contains(&recipient) {
+            continue;
+        }
+        deliver(recipient, &subject, &body);
+        sent_to.push(recipient);
+    }
+}
+
+/// Fire one notification email. Best-effort: log + carry on. Never fails the
+/// caller — the ticket-side state change has already happened.
+fn deliver(recipient: &str, subject: &str, body: &str) {
+    if let Err(e) = try_deliver(recipient, subject, body) {
+        log(format!(
+            "[tickets-handler] notify {} failed: {}",
+            recipient, e
+        ));
+    }
+}
+
+fn try_deliver(recipient: &str, subject: &str, body: &str) -> Result<(), String> {
+    let inbox_api = load_label_as_string(INBOX_API_LABEL)?;
+    let inbox_token = load_label_as_string(INBOX_TOKEN_LABEL)?;
+
+    let payload = InboxMessage {
+        from: NOTIFY_FROM,
+        to: recipient,
+        subject,
+        body,
+    };
+    let json = serde_json::to_string(&payload)
+        .map_err(|e| format!("encode notify body: {}", e))?;
+    let path = format!("/v1/mailboxes/{}/messages", url_encode(recipient));
+
+    let (status, resp_body) = inbox_post(&inbox_api, &inbox_token, &path, &json)?;
+    // The inbox closes TLS without close_notify, so rustls bails on the very
+    // first recv when there's nothing buffered. The POST itself completed
+    // before that; treat status==0 as probably-delivered (same convention as
+    // sentinel).
+    if status == 0 {
+        log(format!(
+            "[tickets-handler] notify {}: response unreadable; assuming delivered",
+            recipient
+        ));
+        return Ok(());
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("inbox {} {}: {}", status, recipient, resp_body));
+    }
+    Ok(())
+}
+
+/// HTTP/1.1 POST with bearer auth. Relies on `[handler.client_tls] enabled = true`
+/// in the manifest so `tcp_connect` auto-upgrades the connection to TLS.
+fn inbox_post(
+    host_port: &str,
+    token: &str,
+    path: &str,
+    body: &str,
+) -> Result<(u16, String), String> {
+    let conn = tcp_connect(String::from(host_port))
+        .map_err(|e| format!("connect {}: {}", host_port, e))?;
+
+    let req = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        path,
+        host_port,
+        token,
+        body.len(),
+        body
+    );
+    tcp_send(conn.clone(), req.into_bytes()).map_err(|e| format!("send: {}", e))?;
+
+    let mut all = Vec::new();
+    let mut body_start: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        if let (Some(hs), Some(cl)) = (body_start, content_length) {
+            if all.len() >= hs + cl {
+                break;
+            }
+        }
+        let chunk = match tcp_receive(conn.clone(), 65536) {
+            Ok(c) => c,
+            // TLS close without close_notify — treat as EOF and report what we have.
+            Err(_) => break,
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        all.extend_from_slice(&chunk);
+
+        if body_start.is_none() {
+            if let Some(idx) = find_subseq(&all, b"\r\n\r\n") {
+                body_start = Some(idx + 4);
+                let header_str = core::str::from_utf8(&all[..idx]).unwrap_or("");
+                for line in header_str.split("\r\n") {
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            if let Ok(n) = value.trim().parse::<usize>() {
+                                content_length = Some(n);
+                            }
+                        }
+                    }
+                }
+                if content_length.is_none() {
+                    content_length = Some(usize::MAX);
+                }
+            }
+        }
+    }
+    let _ = tcp_close(conn);
+
+    let text = String::from_utf8(all).map_err(|_| String::from("non-utf8 response"))?;
+    let status = parse_status_line(&text).unwrap_or(0);
+    let start = body_start.unwrap_or_else(|| text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0));
+    let end = match content_length {
+        Some(n) if n != usize::MAX => start + n.min(text.len().saturating_sub(start)),
+        _ => text.len(),
+    };
+    Ok((status, text[start..end].to_string()))
+}
+
+fn parse_status_line(text: &str) -> Option<u16> {
+    let line = text.lines().next()?;
+    let mut parts = line.split_ascii_whitespace();
+    let _version = parts.next()?;
+    parts.next()?.parse().ok()
+}
+
+fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn http_response(status: u16, body: Vec<u8>) -> Vec<u8> {
