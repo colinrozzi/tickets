@@ -11,7 +11,7 @@
     crane.url = "github:ipetkov/crane";
 
     theater = {
-      url = "github:colinrozzi/theater/release-20260512";
+      url = "github:colinrozzi/theater/main";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
@@ -81,7 +81,7 @@
           shellHook = ''
             echo "tickets dev environment"
             echo "  cargo build --release --target wasm32-unknown-unknown"
-            echo "  theater start acceptor/manifest.toml"
+            echo "  theater spawn acceptor/manifest.toml"
             echo "  ./cli/tickets list"
           '';
         };

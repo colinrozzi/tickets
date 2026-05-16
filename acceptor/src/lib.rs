@@ -18,7 +18,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use packr_guest::{export, import, pack_types, GraphValue, Value};
+use packr_guest::{export, import, pack_types, GraphValue, Value, ValueType};
 use serde::Deserialize;
 
 packr_guest::setup_guest!();
@@ -40,11 +40,8 @@ pack_types! {
             transfer: func(connection-id: string, target-actor: string) -> result<_, string>,
         }
         theater:simple/supervisor {
-            spawn: func(manifest: string, init-bytes: option<list<u8>>, wasm-bytes: option<list<u8>>) -> result<string, string>,
+            spawn: func(manifest: string, init-state: value, wasm-bytes: option<list<u8>>) -> result<string, string>,
             stop-child: func(child-id: string) -> result<_, string>,
-        }
-        theater:simple/rpc {
-            call: func(actor-id: string, function: string, params: value, options: value) -> value,
         }
         theater:simple/store {
             store-at-label: func(store-id: string, label: string, content: list<u8>) -> result<string, string>,
@@ -68,7 +65,7 @@ fn tcp_transfer(connection_id: String, target_actor: String) -> Result<(), Strin
 #[import(module = "theater:simple/supervisor", name = "spawn")]
 fn supervisor_spawn(
     manifest: String,
-    init_bytes: Option<Vec<u8>>,
+    init_state: Value,
     wasm_bytes: Option<Vec<u8>>,
 ) -> Result<String, String>;
 
@@ -77,9 +74,6 @@ fn supervisor_stop_child(child_id: String) -> Result<(), String>;
 
 #[import(module = "theater:simple/store", name = "store-at-label")]
 fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
-
-#[import(module = "theater:simple/rpc", name = "call")]
-fn rpc_call(actor_id: String, function: String, params: Value, options: Value) -> Value;
 
 const LISTEN_ADDR: &str = "127.0.0.1:8443";
 const HANDLER_MANIFEST: &str =
@@ -174,16 +168,16 @@ fn handle_connection(
 }
 
 fn try_handle_connection(state: &AcceptorState, connection_id: &str) -> Result<(), String> {
-    let handler_id = supervisor_spawn(state.handler_manifest.clone(), None, None)
+    // Post theater PRs #58-60, supervisor.spawn auto-calls the child's
+    // actor.init before returning the id. We pass Value::Option::None for
+    // init-state so the handler's manifest initial_state (none in our case)
+    // is used; the handler's init ignores its arg anyway.
+    let init_state = Value::Option {
+        inner_type: ValueType::List(alloc::boxed::Box::new(ValueType::U8)),
+        value: None,
+    };
+    let handler_id = supervisor_spawn(state.handler_manifest.clone(), init_state, None)
         .map_err(|e| format!("spawn handler failed: {}", e))?;
-
-    let init_params = Value::Tuple(alloc::vec![]);
-    let _ = rpc_call(
-        handler_id.clone(),
-        String::from("theater:simple/actor.init"),
-        init_params,
-        Value::Tuple(alloc::vec![]),
-    );
 
     if let Err(e) = tcp_transfer(connection_id.to_string(), handler_id.clone()) {
         let _ = supervisor_stop_child(handler_id);

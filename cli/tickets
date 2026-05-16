@@ -168,4 +168,4 @@ type = "tcp"
 type = "terminal"
 EOF
 
-exec "$TICKETS_THEATER" start "$tmp/manifest.toml"
+exec "$TICKETS_THEATER" spawn "$tmp/manifest.toml"
