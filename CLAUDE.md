@@ -26,6 +26,10 @@ Subject convention: `Re: <original>` for replies; short noun-phrase for new thre
 
 ### Arm an inbox monitor at the start of a session
 
+Use the **`Monitor`** tool (with `persistent: true`), not `Bash` with `run_in_background`. `Bash` background tasks only fire a notification when the *process* completes — they swallow the per-line stdout stream that an inbox watcher emits, so MAIL lines accumulate in the output file but no `<task-notification>` reaches the chat. `Monitor` surfaces each stdout line as a notification (200ms-batched for multi-line events).
+
+Pass this command to `Monitor`:
+
 ```bash
 ADDR=tickets-dev@colinrozzi.com
 last=0
@@ -43,6 +47,7 @@ while true; do
         gsub(/^      /, "", body)
         if (length(body) > 200) body=substr(body, 1, 200) "..."
         printf "MAIL %s\n     %s\n", line, body
+        fflush()
       }
     '
     last=$next
@@ -50,6 +55,10 @@ while true; do
   sleep 30
 done
 ```
+
+The `fflush()` inside the awk action is load-bearing — without it the printf output is held in a pipe buffer and only released when the awk process exits.
+
+If you ever see the inbox file growing but no notifications in chat, it's almost always a monitor armed via `Bash` background instead of `Monitor`. Stop the offender via `TaskStop`, kill the underlying zsh process, and re-arm via `Monitor`.
 
 ## Compatriots
 
