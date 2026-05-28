@@ -38,17 +38,20 @@ nix build .#theater -o result-theater
 ./result-theater/bin/theater start acceptor/manifest.toml
 ```
 
-The acceptor listens on `127.0.0.1:8443` (plain HTTP, bearer auth). State persists across restarts in `./.store/tickets/` (repo-local, auto-created).
+The acceptor listens on `127.0.0.1:8443` (plain HTTP, bearer auth). State persists across restarts under `$THEATER_HOME/store/tickets/` — by default that's `~/.theater/store/tickets/`. Operators that need a different location set `THEATER_HOME` on the theater process before start.
 
 The `initial_state` field in `acceptor/manifest.toml` is a JSON blob — populate it before deploy:
 
 ```json
 {
-  "api_token":   "<bearer for the tickets HTTP API>",
-  "inbox_api":   "mail.colinrozzi.com:443",
-  "inbox_token": "<bearer for the inbox API, for outbound notifications>"
+  "api_token":        "<bearer for the tickets HTTP API>",
+  "inbox_api":        "mail.colinrozzi.com:443",
+  "inbox_token":      "<bearer for the inbox API, for outbound notifications>",
+  "handler_manifest": "<reference to the ticket-handler manifest: file path, https://, or store://>"
 }
 ```
+
+`handler_manifest` is passed verbatim to `supervisor.spawn` on each new connection. For dev that's `ticket-handler/manifest.toml`; for a release deploy that's the `ticket-handler-<date>-<sha>.toml` asset shipped alongside the wasms (its `package` URL points back at the same release's handler wasm).
 
 ## CLI
 

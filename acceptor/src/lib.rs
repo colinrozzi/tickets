@@ -4,13 +4,20 @@
 //! tickets API bearer token + inbox API endpoint + inbox bearer token into
 //! the shared store under labels, then binds the listen socket.
 //!
-//! On each TCP connection: spawns a per-connection ticket-handler, transfers
+//! On each TCP connection: spawns a per-connection ticket-handler (using
+//! the handler-manifest reference from `initial_state`) and transfers
 //! the connection.
 //!
 //! Expected `initial_state` shape (single JSON string):
-//!   {"api_token": "<tickets bearer>",
-//!    "inbox_api": "host:port",
-//!    "inbox_token": "<inbox bearer>"}
+//!   {"api_token":        "<tickets bearer>",
+//!    "inbox_api":        "host:port",
+//!    "inbox_token":      "<inbox bearer>",
+//!    "handler_manifest": "<file path | https:// | store:// reference>"}
+//!
+//! `handler_manifest` is whatever `theater::utils::resolve_reference` will
+//! accept: a local file path for dev, an https URL for a released asset,
+//! or a store-content reference. The acceptor passes it through verbatim
+//! to `supervisor.spawn` per connection.
 
 #![no_std]
 extern crate alloc;
@@ -76,8 +83,6 @@ fn supervisor_stop_child(child_id: String) -> Result<(), String>;
 fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
 
 const LISTEN_ADDR: &str = "127.0.0.1:8443";
-const HANDLER_MANIFEST: &str =
-    "/home/colin/work/actors/tickets/ticket-handler/manifest.toml";
 
 const STORE_ID: &str = "tickets";
 const BEARER_TOKEN_LABEL: &str = "api-bearer-token";
@@ -93,6 +98,12 @@ struct Config {
     inbox_api: String,
     /// Bearer token the handler presents when calling the inbox API.
     inbox_token: String,
+    /// Reference to the ticket-handler manifest, passed to
+    /// `supervisor.spawn` on each new connection. Accepts anything
+    /// `theater::utils::resolve_reference` resolves: a file path, an
+    /// https:// URL, or a store:// reference. Set per-deploy so the
+    /// acceptor is portable across dev + release.
+    handler_manifest: String,
 }
 
 #[export(name = "theater:simple/actor.init")]
@@ -104,7 +115,7 @@ fn init(state: Value) -> Result<(AcceptorState, ()), String> {
         _ => {
             return Err(String::from(
                 "acceptor: initial_state must be a JSON config string \
-                 with {api_token, inbox_api, inbox_token}",
+                 with {api_token, inbox_api, inbox_token, handler_manifest}",
             ))
         }
     };
@@ -119,6 +130,11 @@ fn init(state: Value) -> Result<(AcceptorState, ()), String> {
     if cfg.inbox_token.is_empty() {
         return Err(String::from("acceptor: inbox_token must be non-empty"));
     }
+    if cfg.handler_manifest.is_empty() {
+        return Err(String::from(
+            "acceptor: handler_manifest must be non-empty",
+        ));
+    }
 
     persist(BEARER_TOKEN_LABEL, cfg.api_token)?;
     persist(INBOX_API_LABEL, cfg.inbox_api)?;
@@ -127,14 +143,14 @@ fn init(state: Value) -> Result<(AcceptorState, ()), String> {
     let listener_id = tcp_listen(String::from(LISTEN_ADDR))
         .map_err(|e| format!("listen failed: {}", e))?;
     log(format!(
-        "[tickets-acceptor] HTTP listening on {} (id={})",
-        LISTEN_ADDR, listener_id
+        "[tickets-acceptor] HTTP listening on {} (id={}); handler_manifest={}",
+        LISTEN_ADDR, listener_id, cfg.handler_manifest
     ));
 
     Ok((
         AcceptorState {
             listener_id,
-            handler_manifest: String::from(HANDLER_MANIFEST),
+            handler_manifest: cfg.handler_manifest,
         },
         (),
     ))
