@@ -65,6 +65,38 @@
 
         packages.theater = theaterBin;
 
+        # nix run .#release — explicit version-stamping ceremony.
+        # Creates a release tag (release-YYYYMMDD-<sha7>) on the current
+        # HEAD and pushes it. The push triggers .github/workflows/release.yml,
+        # which builds the wasm artifacts and uploads them to the GH release.
+        # This mirrors theater's release-script pattern: developer-initiated,
+        # explicit, no auto-trigger on every main commit.
+        packages.release = pkgs.writeShellScriptBin "tickets-release" ''
+          set -e
+          BRANCH=$(${pkgs.git}/bin/git rev-parse --abbrev-ref HEAD)
+          if [ "$BRANCH" != "main" ]; then
+            echo "release: refusing to tag a non-main branch (current: $BRANCH)" >&2
+            exit 1
+          fi
+          if ! ${pkgs.git}/bin/git diff --quiet HEAD 2>/dev/null || \
+             ! ${pkgs.git}/bin/git diff --cached --quiet 2>/dev/null; then
+            echo "release: refusing to tag with a dirty working tree" >&2
+            exit 1
+          fi
+          DATE=$(date +%Y%m%d)
+          SHA=$(${pkgs.git}/bin/git rev-parse --short=7 HEAD)
+          TAG="release-$DATE-$SHA"
+          if ${pkgs.git}/bin/git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "release: tag $TAG already exists" >&2
+            exit 1
+          fi
+          ${pkgs.git}/bin/git tag "$TAG"
+          ${pkgs.git}/bin/git push origin "$TAG"
+          echo "release: tagged + pushed $TAG"
+          echo "release: CI will build + create the GH release at"
+          echo "  https://github.com/colinrozzi/tickets/releases/tag/$TAG"
+        '';
+
         packages.clippy = craneLib.cargoClippy (commonArgs // {
           inherit cargoArtifacts;
           cargoClippyExtraArgs = "--target wasm32-unknown-unknown -- -D warnings";
