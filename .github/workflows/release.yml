@@ -46,10 +46,24 @@ jobs:
           git push origin "$TAG"
           gh release create "$TAG" --generate-notes
 
-          # Tickets is a WASM actor system, not a native binary. The
-          # release artifact is a tarball of the three .wasm modules
-          # produced by `nix build` (acceptor, handler, cli).
-          STAGE="tickets-${TAG#release-}-wasm32"
+          # Tickets is a WASM actor system, not a native binary.
+          # Upload artifacts in two shapes:
+          #   1) Each bare .wasm as its own release asset, named
+          #      <actor>-<date>-<sha>.wasm. Theater's manifest fetcher
+          #      (resolve_reference, https://) returns the raw HTTP body
+          #      and expects it to be a wasm component, so sentinel will
+          #      point its 'package' URL at one of these directly.
+          #   2) A tarball of all three .wasm files for humans / local
+          #      use, with a sha256 sidecar.
+          STAGE_TAG="${TAG#release-}"
+          ASSETS=()
+          for actor in tickets_acceptor tickets_handler tickets_cli; do
+            cp "$(realpath result)/${actor}.wasm" "${actor}-${STAGE_TAG}.wasm"
+            chmod +w "${actor}-${STAGE_TAG}.wasm"
+            ASSETS+=("${actor}-${STAGE_TAG}.wasm")
+          done
+
+          STAGE="tickets-${STAGE_TAG}-wasm32"
           mkdir -p "$STAGE"
           cp "$(realpath result)/tickets_acceptor.wasm" "$STAGE/"
           cp "$(realpath result)/tickets_handler.wasm" "$STAGE/"
@@ -57,6 +71,7 @@ jobs:
           chmod -R +w "$STAGE"
           tar -czf "$STAGE.tar.gz" "$STAGE"
           sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
-          gh release upload "$TAG" "$STAGE.tar.gz" "$STAGE.tar.gz.sha256"
+
+          gh release upload "$TAG" "${ASSETS[@]}" "$STAGE.tar.gz" "$STAGE.tar.gz.sha256"
         env:
           GH_TOKEN: ${{ github.token }}
