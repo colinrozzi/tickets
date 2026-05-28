@@ -25,7 +25,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use packr_guest::{export, import, pack_types, GraphValue, Value, ValueType};
+use packr_guest::{export, import, pack_types, GraphValue, Value};
 use serde::Deserialize;
 
 packr_guest::setup_guest!();
@@ -47,7 +47,7 @@ pack_types! {
             transfer: func(connection-id: string, target-actor: string) -> result<_, string>,
         }
         theater:simple/supervisor {
-            spawn: func(manifest: string, init-state: value, wasm-bytes: option<list<u8>>) -> result<string, string>,
+            spawn: func(manifest: string, init-state: option<value>, wasm-bytes: option<list<u8>>) -> result<string, string>,
             stop-child: func(child-id: string) -> result<_, string>,
         }
         theater:simple/store {
@@ -72,7 +72,7 @@ fn tcp_transfer(connection_id: String, target_actor: String) -> Result<(), Strin
 #[import(module = "theater:simple/supervisor", name = "spawn")]
 fn supervisor_spawn(
     manifest: String,
-    init_state: Value,
+    init_state: Option<Value>,
     wasm_bytes: Option<Vec<u8>>,
 ) -> Result<String, String>;
 
@@ -185,14 +185,10 @@ fn handle_connection(
 
 fn try_handle_connection(state: &AcceptorState, connection_id: &str) -> Result<(), String> {
     // Post theater PRs #58-60, supervisor.spawn auto-calls the child's
-    // actor.init before returning the id. We pass Value::Option::None for
-    // init-state so the handler's manifest initial_state (none in our case)
-    // is used; the handler's init ignores its arg anyway.
-    let init_state = Value::Option {
-        inner_type: ValueType::List(alloc::boxed::Box::new(ValueType::U8)),
-        value: None,
-    };
-    let handler_id = supervisor_spawn(state.handler_manifest.clone(), init_state, None)
+    // actor.init before returning the id. We pass None for init-state so
+    // the handler's manifest initial_state (none in our case) is used;
+    // the handler's init ignores its arg anyway.
+    let handler_id = supervisor_spawn(state.handler_manifest.clone(), None, None)
         .map_err(|e| format!("spawn handler failed: {}", e))?;
 
     if let Err(e) = tcp_transfer(connection_id.to_string(), handler_id.clone()) {
