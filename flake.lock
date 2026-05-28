@@ -140,11 +140,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1778958350,
-        "narHash": "sha256-kLlMfg7jaZBV1/xwWXP+BvB6Mxw7VS5hitFBpdzn+wQ=",
+        "lastModified": 1779934105,
+        "narHash": "sha256-/MEnf6wvacBAQ3wMP0aq10beODkykQ0B9u2jRBr3m2A=",
         "owner": "colinrozzi",
         "repo": "theater",
-        "rev": "91e6a5aed61263d270bc18dfe2a07bc926ead125",
+        "rev": "f5f5b667a000872316a7fdfa991050246f7d5abe",
         "type": "github"
       },
       "original": {
