@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'flake.nix'
+      - 'flake.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    name: Build + tag + upload artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Workspace build sanity check. Blocks the release if main does not
+      # compile — same shape as theater's publish.yml pre-publish step.
+      # Produces result/ with the three wasm actors.
+      - name: Build workspace
+        run: nix build
+
+      - name: Create tag, GitHub release, and upload artifact
+        run: |
+          DATE=$(date +%Y%m%d)
+          SHA=$(git rev-parse --short=7 HEAD)
+          TAG="release-$DATE-$SHA"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --generate-notes
+
+          # Tickets is a WASM actor system, not a native binary. The
+          # release artifact is a tarball of the three .wasm modules
+          # produced by `nix build` (acceptor, handler, cli).
+          STAGE="tickets-${TAG#release-}-wasm32"
+          mkdir -p "$STAGE"
+          cp "$(realpath result)/tickets_acceptor.wasm" "$STAGE/"
+          cp "$(realpath result)/tickets_handler.wasm" "$STAGE/"
+          cp "$(realpath result)/tickets_cli.wasm" "$STAGE/"
+          chmod -R +w "$STAGE"
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+          sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+          gh release upload "$TAG" "$STAGE.tar.gz" "$STAGE.tar.gz.sha256"
+        env:
+          GH_TOKEN: ${{ github.token }}
