@@ -51,13 +51,19 @@ jobs:
           gh release create "$TAG" --generate-notes
 
           # Tickets is a WASM actor system, not a native binary.
-          # Upload artifacts in two shapes:
+          # Upload artifacts in three shapes:
           #   1) Each bare .wasm as its own release asset, named
           #      <actor>-<date>-<sha>.wasm. Theater's manifest fetcher
           #      (resolve_reference, https://) returns the raw HTTP body
           #      and expects it to be a wasm component, so sentinel will
           #      point its 'package' URL at one of these directly.
-          #   2) A tarball of all three .wasm files for humans / local
+          #   2) A release-flavored ticket-handler manifest with a
+          #      self-referential package URL pointing at this release's
+          #      handler.wasm asset. tickets-acceptor's initial_state
+          #      .handler_manifest is set to this URL at deploy time; theater
+          #      fetches it, parses, then fetches the wasm inside. No
+          #      templating needed.
+          #   3) A tarball of all three .wasm files for humans / local
           #      use, with a sha256 sidecar.
           STAGE_TAG="${TAG#release-}"
           ASSETS=()
@@ -66,6 +72,28 @@ jobs:
             chmod +w "${actor}-${STAGE_TAG}.wasm"
             ASSETS+=("${actor}-${STAGE_TAG}.wasm")
           done
+
+          HANDLER_MANIFEST_FILE="ticket-handler-${STAGE_TAG}.toml"
+          HANDLER_WASM_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/tickets_handler-${STAGE_TAG}.wasm"
+          cat > "${HANDLER_MANIFEST_FILE}" <<EOF
+          name = "tickets-handler"
+          version = "0.1.0"
+          package = "${HANDLER_WASM_URL}"
+
+          [[handler]]
+          type = "runtime"
+
+          [[handler]]
+          type = "tcp"
+
+          [handler.client_tls]
+          enabled = true
+
+          [[handler]]
+          type = "store"
+          store_id = "tickets"
+          EOF
+          ASSETS+=("${HANDLER_MANIFEST_FILE}")
 
           STAGE="tickets-${STAGE_TAG}-wasm32"
           mkdir -p "$STAGE"

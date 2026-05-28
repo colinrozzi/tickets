@@ -1,6 +1,10 @@
 name = "tickets-handler"
 version = "0.1.0"
 package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_handler.wasm"
+# The store handler intentionally omits `base_path`: theater falls back to
+# `$THEATER_HOME/store/<store_id>`. Because store_id matches the acceptor's,
+# both actors share the same backing store as long as they run under the
+# same THEATER_HOME (default `$HOME/.theater`).
 
 [[handler]]
 type = "runtime"
@@ -13,5 +17,4 @@ enabled = true
 
 [[handler]]
 type = "store"
-base_path = "/home/colin/work/actors/tickets/.store"
 store_id = "tickets"
