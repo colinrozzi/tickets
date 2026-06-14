@@ -79,6 +79,7 @@ jobs:
           name = "tickets-handler"
           version = "0.1.0"
           package = "${HANDLER_WASM_URL}"
+          static_package = true
 
           [[handler]]
           type = "runtime"
