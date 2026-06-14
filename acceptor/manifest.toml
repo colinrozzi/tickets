@@ -1,6 +1,7 @@
 name = "tickets-acceptor"
 version = "0.1.0"
 package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_acceptor.wasm"
+static_package = true
 # initial_state is a JSON blob (replace at deploy time):
 #   {
 #     "api_token":        "<tickets HTTP API bearer>",
