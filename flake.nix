@@ -11,7 +11,12 @@
     crane.url = "github:ipetkov/crane";
 
     theater = {
-      url = "github:colinrozzi/theater/main";
+      # Pinned to prod rev f852aec3 (theater main #131 transfer-async +
+      # #132 TLS-off-accept-loop — the accept-loop wedge fix). This is the
+      # rev prod's theater binary runs and the sentinel/UIs are built
+      # against; keeping tickets on the same rev keeps one runtime story
+      # and guarantees WIT interface-hash alignment at spawn time.
+      url = "github:colinrozzi/theater/f852aec3";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
