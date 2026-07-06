@@ -1,0 +1,61 @@
+# tickets.service — prod tickets-acceptor on the mail.colinrozzi.com box.
+#
+# Mirrors inbox.service (runs as root, /var/lib/<unit> layout, theater spawn
+# a single acceptor manifest) with the cgroup-ceiling lesson from
+# sentinel.service (2026-07-05 balloon incident) baked in.
+#
+# Topology B: tickets-acceptor stays on its OWN systemd unit — it is NOT
+# supervised by sentinel (sentinel currently supervises only the net-new
+# UIs). This unit binds 127.0.0.1:8443; sentinel/inbox never bind it, so the
+# processes run side by side with no port or store overlap.
+#
+# The acceptor + its per-connection ticket-handler children resolve their
+# store to $THEATER_HOME/store/tickets. Setting THEATER_HOME here puts that
+# on the big volume (/mnt/main-volume/tickets/store/tickets) with no per-
+# deploy manifest edits — that is the whole point of the deploy-agnostic
+# refactor (#10). Both the acceptor and the child handler run in THIS theater
+# process, so both inherit THEATER_HOME and share the one store.
+
+[Unit]
+Description=Theater tickets acceptor — HTTP API on 127.0.0.1:8443 (tickets-ui backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Store + all tickets-theater runtime state land under the big volume.
+# THEATER_HOME=/mnt/main-volume/tickets  ->  store at .../store/tickets.
+Environment=THEATER_HOME=/mnt/main-volume/tickets
+# warn/error only — debug/trace logging was the sentinel balloon's cause.
+Environment=RUST_LOG=warn
+
+# theater binary must be the prod-pinned f852aec3 build (#131+#132), the same
+# rev everything else on the box runs. gc-root it so nix-collect-garbage can
+# not yank it from under the live process. `nix build .#theater` from the
+# tickets repo (now pinned to f852aec3) produces exactly this binary; or reuse
+# inbox's existing f852aec3 gc-root.
+ExecStart=/var/lib/tickets/gc-roots/theater/bin/theater spawn /var/lib/tickets/manifest.toml
+WorkingDirectory=/var/lib/tickets
+
+# --- restart policy ---
+Restart=on-failure
+RestartSec=5
+
+# --- logging ---
+StandardOutput=append:/var/log/tickets/theater.log
+StandardError=append:/var/log/tickets/theater.log
+LimitNOFILE=65536
+
+# --- cgroup memory ceiling (sentinel.service lesson) ---
+# tickets is small: one acceptor + one ephemeral handler per connection.
+# Generous ceiling that still throttles + OOM-kills a runaway leak instead of
+# letting it starve inbox/sentinel on the 964MB box. Re-tune only after
+# measuring; drop the three lines to match inbox.service if you prefer no cap.
+MemoryHigh=200M
+MemoryMax=300M
+MemoryAccounting=yes
+# No User= — runs as root, mirroring inbox.service / sentinel.service.
+
+[Install]
+WantedBy=multi-user.target
