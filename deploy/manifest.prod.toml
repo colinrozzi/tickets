@@ -1,0 +1,38 @@
+# Prod tickets-acceptor manifest — deployed to /var/lib/tickets/manifest.toml
+# on the mail.colinrozzi.com box. This is a TEMPLATE: the operator fills the
+# three __PLACEHOLDER__ values at deploy time (secrets never live in git).
+#
+# Structure is identical to acceptor/manifest.toml in the repo; only `package`
+# (a release-asset URL instead of a local build path) and `initial_state`
+# (real values instead of dev defaults) differ.
+#
+#   __RELEASE_TAG__   e.g. release-20260706-2d428a7
+#   __STAGE_TAG__     the tag minus the "release-" prefix, e.g. 20260706-2d428a7
+#   __API_TOKEN__     the tickets HTTP API bearer (generated for this deploy;
+#                     tickets-ui gets the same value as __TICKETS_API_TOKEN__)
+#   __INBOX_BEARER__  the shared inbox API bearer the handler presents when it
+#                     POSTs notification emails as tickets@colinrozzi.com
+#                     (same token inbox.service uses; read it on the box).
+#
+# The store handler intentionally omits base_path: theater resolves it to
+# $THEATER_HOME/store/tickets. tickets.service sets THEATER_HOME=/mnt/main-
+# volume/tickets, so the store lands at /mnt/main-volume/tickets/store/tickets.
+
+name = "tickets-acceptor"
+version = "0.1.0"
+package = "https://github.com/colinrozzi/tickets/releases/download/__RELEASE_TAG__/tickets_acceptor-__STAGE_TAG__.wasm"
+static_package = true
+initial_state = "{\"api_token\":\"__API_TOKEN__\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"__INBOX_BEARER__\",\"handler_manifest\":\"https://github.com/colinrozzi/tickets/releases/download/__RELEASE_TAG__/ticket-handler-__STAGE_TAG__.toml\"}"
+
+[[handler]]
+type = "runtime"
+
+[[handler]]
+type = "tcp"
+
+[[handler]]
+type = "supervisor"
+
+[[handler]]
+type = "store"
+store_id = "tickets"
