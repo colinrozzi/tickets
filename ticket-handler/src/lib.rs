@@ -12,7 +12,8 @@
 //!
 //! On create / status-change / new-comment the handler also fires a
 //! best-effort notification email to the relevant ticket participants via
-//! the inbox HTTP API (TLS POST to /v1/mailboxes/<rcpt>/messages).
+//! the inbox HTTP API (TLS POST to /v1/mailboxes/tickets@colinrozzi.com/send,
+//! routed from tickets@ to each participant).
 
 #![no_std]
 extern crate alloc;
@@ -144,9 +145,10 @@ struct TicketsList {
 }
 
 #[derive(Serialize)]
-struct InboxMessage<'a> {
-    from: &'a str,
-    to: &'a str,
+struct InboxSend<'a> {
+    /// Recipients. The router's `/send` takes a JSON array; ticket
+    /// notifications always target a single participant.
+    to: [&'a str; 1],
     subject: &'a str,
     body: &'a str,
 }
@@ -582,15 +584,18 @@ fn try_deliver(recipient: &str, subject: &str, body: &str) -> Result<(), String>
     let inbox_api = load_label_as_string(INBOX_API_LABEL)?;
     let inbox_token = load_label_as_string(INBOX_TOKEN_LABEL)?;
 
-    let payload = InboxMessage {
-        from: NOTIFY_FROM,
-        to: recipient,
+    // Send *from* tickets@ *to* the participant through the real router: this
+    // authenticates + routes (DKIM, proper provenance) instead of side-door
+    // injecting a copy into the target mailbox. `from` is the URL-path address;
+    // `to` is a JSON array in the body.
+    let payload = InboxSend {
+        to: [recipient],
         subject,
         body,
     };
     let json = serde_json::to_string(&payload)
         .map_err(|e| format!("encode notify body: {}", e))?;
-    let path = format!("/v1/mailboxes/{}/messages", url_encode(recipient));
+    let path = format!("/v1/mailboxes/{}/send", url_encode(NOTIFY_FROM));
 
     let (status, resp_body) = inbox_post(&inbox_api, &inbox_token, &path, &json)?;
     // The inbox closes TLS without close_notify, so rustls bails on the very
