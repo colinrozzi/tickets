@@ -1,0 +1,20 @@
+[target.wasm32-unknown-unknown]
+# Fixed-base self-contained member (packr 0.10.2). packr::link internalizes
+# pack:alloc + memory into an own-memory composite. --no-merge-data-segments
+# keeps the CGRF __pack_types metadata as its own segment so read_surface finds
+# it. Replaces the old 0.8.1 PIC flags entirely (no relocation-model=pic,
+# --experimental-pic, -shared, --export=__wasm_call_ctors).
+#
+# NOTE: crane ignores .cargo/config.toml rustflags — the flake passes these same
+# flags via CARGO_ENCODED_RUSTFLAGS for the CI build. This file is for local
+# `cargo` / `theater build` use. Single-package base (0x50000 = 327680); each
+# tickets actor composes as its own single-member composite.
+rustflags = [
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--initial-memory=8388608",
+    "-C", "link-arg=--stack-first",
+    "-C", "link-arg=-zstack-size=262144",
+    "-C", "link-arg=--global-base=327680",
+    "-C", "link-arg=--no-entry",
+    "-C", "link-arg=--no-merge-data-segments",
+]
