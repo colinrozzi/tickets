@@ -8,6 +8,6 @@ name = "tickets_acceptor"
 crate-type = ["cdylib"]
 
 [dependencies]
-packr-guest = "0.10.2"
+packr-guest = { version = "0.10.2", features = ["derive"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
