@@ -11,12 +11,14 @@
     crane.url = "github:ipetkov/crane";
 
     theater = {
-      # Pinned to prod rev f852aec3 (theater main #131 transfer-async +
-      # #132 TLS-off-accept-loop — the accept-loop wedge fix). This is the
-      # rev prod's theater binary runs and the sentinel/UIs are built
-      # against; keeping tickets on the same rev keeps one runtime story
-      # and guarantees WIT interface-hash alignment at spawn time.
-      url = "github:colinrozzi/theater/f852aec3";
+      # Canonical packr-0.10.2 self-contained fleet rev (theater main HEAD,
+      # post-`theater compose`, PR #141). ONE rev pinned by every actor AND the
+      # rev the prod binary is cut from — the atomic-flip contract. It HAS the
+      # `theater compose` CLI used to build our self-contained composites, and
+      # its host theater:simple/* pact/WIT ABI is byte-identical to the earlier
+      # staged binary (#141 was theater-cli + CI + docs only), so it stays
+      # interface-aligned at spawn time.
+      url = "github:colinrozzi/theater/7daab2ada0051f0517bf8cf3de9719fc2d75e0f6";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
@@ -51,20 +53,48 @@
           cargoExtraArgs = "--target wasm32-unknown-unknown";
           CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
           doCheck = false;
+          # crane ignores .cargo/config.toml rustflags, so pass the fixed-base
+          # self-contained link flags (recipe §2) via CARGO_ENCODED_RUSTFLAGS
+          # (0x1f-separated). Must stay in sync with .cargo/config.toml — these
+          # build each member at a fixed absolute base (single-package 0x50000)
+          # so `theater compose` can internalize memory + pack:alloc.
+          CARGO_ENCODED_RUSTFLAGS = builtins.concatStringsSep (builtins.fromJSON ''"\u001f"'') [
+            "-C" "link-arg=--import-memory"
+            "-C" "link-arg=--initial-memory=8388608"
+            "-C" "link-arg=--stack-first"
+            "-C" "link-arg=-zstack-size=262144"
+            "-C" "link-arg=--global-base=327680"
+            "-C" "link-arg=--no-entry"
+            "-C" "link-arg=--no-merge-data-segments"
+          ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        theaterBin = theater.packages.${system}.default;
+        # The compose-capable theater CLI (has `theater compose`) from the
+        # pinned input; `.theater` and `.default` both resolve to it.
+        theaterBin = theater.packages.${system}.theater;
 
       in {
         packages.default = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
+          # Recipe §Crane: one buildPackage pass, no shared deps-only artifact
+          # for the wasm32 self-contained member build.
+          cargoArtifacts = null;
+          # theater compose + binaryen (wasm-merge) + wasm-tools do the
+          # compose/verify inside the sandboxed derivation.
+          nativeBuildInputs = [ theaterBin pkgs.binaryen pkgs.wasm-tools ];
+          # Build the 3 bare members, then compose each with packr's bundled
+          # allocator into a self-contained <name>.composite.wasm and drop the
+          # bare member (the 0.10.x loader rejects bare members — deploy the
+          # composite). `theater compose` verifies imports-are-host-only and
+          # fails the build on a non-self-contained member.
           installPhaseCommand = ''
             mkdir -p $out
-            cp target/wasm32-unknown-unknown/release/tickets_acceptor.wasm $out/
-            cp target/wasm32-unknown-unknown/release/tickets_handler.wasm $out/
-            cp target/wasm32-unknown-unknown/release/tickets_cli.wasm $out/
+            for name in tickets_acceptor tickets_handler tickets_cli; do
+              cp "target/wasm32-unknown-unknown/release/$name.wasm" "$out/$name.wasm"
+              theater compose "$out/$name.wasm" -o "$out/$name.composite.wasm"
+              rm "$out/$name.wasm"
+            done
           '';
         });
 
@@ -114,10 +144,18 @@
         };
 
         devShells.default = craneLib.devShell {
-          packages = [ rustToolchain theaterBin pkgs.ripgrep ];
+          # binaryen (wasm-merge) + wasm-tools are NEW vs the 0.8.1 PIC build:
+          # `theater compose` needs wasm-merge to fuse the member with packr's
+          # bundled allocator into the self-contained composite, and wasm-tools
+          # to validate + assert imports are host-only. `nix build` runs the
+          # compose in the sandbox; these are here for manual/local use.
+          packages = [ rustToolchain theaterBin pkgs.binaryen pkgs.wasm-tools pkgs.ripgrep ];
           shellHook = ''
             echo "tickets dev environment"
             echo "  cargo build --release --target wasm32-unknown-unknown"
+            # theater build <member> can't resolve a shared-workspace target dir;
+            # compose the prebuilt member instead (same as the flake installPhase).
+            echo "  theater compose target/wasm32-unknown-unknown/release/tickets_acceptor.wasm"
             echo "  theater spawn acceptor/manifest.toml"
             echo "  ./cli/tickets list"
           '';
