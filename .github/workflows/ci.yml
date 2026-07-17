@@ -1,23 +1,29 @@
 name: CI (self-contained composite build)
 
-# PR/push build validation for the packr 0.10.2 self-contained rebuild.
-# Mirrors theater's "Reference actor (self-contained e2e)" job: for each actor,
-# build + compose the member into a self-contained <name>.composite.wasm and
+# PR/push build validation for the packr 0.10.2 self-contained rebuild: build
+# each actor member, compose it into a self-contained <name>.composite.wasm, and
 # assert every residual import is a host theater:simple/* function. NO publish,
 # NO release tag — this is the iteration harness (release.yml still owns the
 # gated public release).
 #
-# STATUS: expected RED until three cross-repo answers land, then goes green:
-#   - Q1 (pack-dev): the 0.7 GraphValue/composite_abi typed-state API is gone in
-#     0.10.2; the actor source must migrate to the Value/pact-record style before
-#     it compiles. HELD.
-#   - Q2 (theater-dev): compose method under our crane workspace. This job uses
-#     the reference `theater build --release <actor>` path; if the fleet standard
-#     is crane + packr::link on the built member instead, the build step below is
-#     what changes. HELD.
-#   - Q3 (theater-dev): flake.nix still pins theater to the 0.8.1 prod rev
-#     (f852aec3), whose `theater` CLI has no `build` compose subcommand. Bumping
-#     that pin to the 0.10.2 rev is what makes `theater build` available here. HELD.
+# COMPOSE METHOD (Q2, theater-dev, definitive): path (b) — crane builds the bare
+# members (`nix build`), then compose each PREBUILT member with `theater compose`
+# (new theater-cli subcommand, links member + packr DEFAULT_ALLOCATOR_WASM at base
+# 0x50000, verifies). `theater build <dir>` does NOT work here: it assumes a
+# standalone crate whose target/ is in the crate dir, but our 3 actors share one
+# workspace target/ at the repo root. binaryen (wasm-merge) + wasm-tools do the
+# compose/verify.
+#
+# STATUS: expected RED until the following land; then this goes green.
+#   - `theater compose` CLI: theater-dev is shipping it (theater repo PR) and will
+#     hand back the drop-in build step + final YAML. The build step below is a
+#     placeholder in the confirmed (b) shape until then.
+#   - Q3 theater rev: flake.nix still pins the 0.8.1 prod rev (f852aec3), whose
+#     theater CLI has no compose. Bump to the ratified 0.10.2 rev (theater-dev
+#     recommends 58955894; manager/Colin ratify) + relock flake.lock (needs nix).
+#   - Q1 source migration (pack-dev authority): acceptor + ticket-handler use the
+#     removed 0.7 GraphValue/composite_abi typed-state derive; port to the
+#     pack_types! record style before they compile. HELD pending pack-dev confirm.
 
 on:
   pull_request:
@@ -36,28 +42,30 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      # Compose each actor's member with packr's bundled allocator into a
-      # self-contained composite. `theater` (from the flake input) + binaryen
-      # (wasm-merge) + wasm-tools all come from `nix develop`.
-      - name: theater build --release (compose) per actor
+      # (b) crane builds the 3 bare members into ./result …
+      - name: Build actor members (crane)
+        run: nix build
+
+      # … then compose each prebuilt member into a self-contained composite.
+      # PLACEHOLDER: exact invocation comes from theater-dev with the `theater
+      # compose` CLI. Confirmed shape: `theater compose result/<name>.wasm`.
+      - name: Compose members -> self-contained composites (theater compose)
         run: |
           set -euo pipefail
-          for a in acceptor ticket-handler cli; do
-            echo "::group::theater build --release $a"
-            nix develop --command theater build --release "$a"
+          for w in tickets_acceptor tickets_handler tickets_cli; do
+            echo "::group::theater compose $w"
+            nix develop --command theater compose "result/$w.wasm" -o "$w.composite.wasm"
             echo "::endgroup::"
           done
 
-      # Verify: validate + assert every residual import is a host theater:simple/*
-      # function (no env.memory / pack:alloc / __linear_memory). Same gate
-      # `theater build` applies internally; re-run it explicitly so a regression
-      # is loud in CI.
+      # Verify (method-independent): validate + assert every residual import is a
+      # host theater:simple/* function (no env.memory / pack:alloc / __linear_memory).
       - name: Assert composites are self-contained (imports host-only)
         run: |
           nix develop --command bash -c '
             set -euo pipefail
-            shopt -s globstar nullglob
-            composites=( **/*.composite.wasm )
+            shopt -s nullglob
+            composites=( *.composite.wasm )
             if [ "${#composites[@]}" -eq 0 ]; then
               echo "::error::no *.composite.wasm emitted"; exit 1
             fi
