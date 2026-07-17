@@ -114,10 +114,16 @@
         };
 
         devShells.default = craneLib.devShell {
-          packages = [ rustToolchain theaterBin pkgs.ripgrep ];
+          # binaryen (wasm-merge) + wasm-tools are NEW vs the 0.8.1 PIC build:
+          # `theater build --release` needs wasm-merge to fuse the member with
+          # packr's bundled allocator into the self-contained composite, and
+          # wasm-tools to validate + assert imports are host-only. The CI
+          # composite-build job runs these via `nix develop`, so they live here.
+          packages = [ rustToolchain theaterBin pkgs.binaryen pkgs.wasm-tools pkgs.ripgrep ];
           shellHook = ''
             echo "tickets dev environment"
             echo "  cargo build --release --target wasm32-unknown-unknown"
+            echo "  theater build --release acceptor   # -> tickets_acceptor.composite.wasm"
             echo "  theater spawn acceptor/manifest.toml"
             echo "  ./cli/tickets list"
           '';
