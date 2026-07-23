@@ -1,20 +1,11 @@
-name: CI (self-contained composite build)
+name: CI (plain-build import-surface check)
 
-# PR/push build validation for the packr 0.10.2 self-contained rebuild: `nix build`
-# builds each actor member (crane) and composes it with packr's bundled allocator
-# into a self-contained <name>.composite.wasm (via `theater compose` in the flake's
-# installPhase), then this job re-asserts every composite imports host
-# theater:simple/* only. NO publish, NO release tag — this is the iteration
-# harness; release.yml still owns the gated public release.
-#
-# Compose method (Q2, theater-dev): path (b) — crane builds the bare members, then
-# `theater compose` (theater PR #141) composes each prebuilt member. Wired into the
-# flake buildPackage installPhase; `theater compose` also fails the build on a
-# non-self-contained member, so this verify step is belt-and-suspenders.
-#
-# NOTE: goes green once the manager regens the locks on the dev box (container
-# can't nix-flake-update): flake.lock narHash for theater rev 7daab2ad, and
-# Cargo.lock for packr-guest 0.10.2 (+ packr-derive via features=["derive"]).
+# PR/push build validation for the packr 0.11.0 plain-build rebuild: `nix build`
+# does a plain `cargo build` of each actor cdylib (no compose — 0.11.0 retired
+# the fixed-base/fuse machinery), producing directly-loadable result/*.wasm.
+# This job then asserts every residual import is a host theater:simple/* function
+# (no env.memory / pack:alloc / __linear_memory). NO publish — release.yml owns
+# the gated public release.
 
 on:
   pull_request:
@@ -25,36 +16,35 @@ permissions:
   contents: read
 
 jobs:
-  composite:
-    name: Build + verify self-contained composites
+  build-verify:
+    name: Build + verify host-only import surface
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      # crane builds the 3 members -> theater compose each -> result/*.composite.wasm
-      - name: Build composites
+      # Plain cargo build of the 3 actor cdylibs -> result/*.wasm
+      - name: Build actors
         run: nix build --print-build-logs
 
-      # Re-assert every composite is self-contained: validate + every residual
-      # import must be a host theater:simple/* function (no env.memory /
-      # pack:alloc / __linear_memory).
-      - name: Assert composites are self-contained (imports host-only)
+      # Assert every actor is self-contained: validate + every residual import
+      # must be a host theater:simple/* function.
+      - name: Assert host-only import surface
         run: |
           nix develop --command bash -c '
             set -euo pipefail
             shopt -s nullglob
             found=0
-            for c in result/*.composite.wasm; do
+            for w in result/*.wasm; do
               found=1
-              echo "== $c ($(stat -L -c%s "$c") bytes) =="
-              wasm-tools validate "$c"
-              bad=$(wasm-tools print "$c" | grep -E "^[[:space:]]*\(import " | grep -v "theater:simple/" || true)
+              echo "== $w ($(stat -L -c%s "$w") bytes) =="
+              wasm-tools validate "$w"
+              bad=$(wasm-tools print "$w" | grep -E "^[[:space:]]*\(import " | grep -v "theater:simple/" || true)
               if [ -n "$bad" ]; then
-                echo "::error::$c has non-host imports (not self-contained):"; echo "$bad"; exit 1
+                echo "::error::$w has non-host imports (env.memory / pack:alloc / __linear_memory → recipe not applied):"; echo "$bad"; exit 1
               fi
               echo "  all residual imports are host theater:simple/* — self-contained"
             done
-            [ "$found" = 1 ] || { echo "::error::no result/*.composite.wasm found"; exit 1; }
+            [ "$found" = 1 ] || { echo "::error::no result/*.wasm found"; exit 1; }
           '

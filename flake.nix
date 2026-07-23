@@ -11,14 +11,12 @@
     crane.url = "github:ipetkov/crane";
 
     theater = {
-      # Canonical packr-0.10.2 self-contained fleet rev (theater main HEAD,
-      # post-`theater compose`, PR #141). ONE rev pinned by every actor AND the
-      # rev the prod binary is cut from — the atomic-flip contract. It HAS the
-      # `theater compose` CLI used to build our self-contained composites, and
-      # its host theater:simple/* pact/WIT ABI is byte-identical to the earlier
-      # staged binary (#141 was theater-cli + CI + docs only), so it stays
-      # interface-aligned at spawn time.
-      url = "github:colinrozzi/theater/7daab2ada0051f0517bf8cf3de9719fc2d75e0f6";
+      # packr-0.11.0 plain-build fleet rev (theater main HEAD, PR #149 — the
+      # 0.11.0 hard break that retired all compose/fuse machinery). Actors are
+      # plain cargo cdylibs now, so the build no longer needs the theater CLI;
+      # this input remains for the dev shell (`theater spawn`) + interface
+      # alignment with the eventual 0.11.0 prod binary.
+      url = "github:colinrozzi/theater/73a4540b";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
@@ -53,47 +51,36 @@
           cargoExtraArgs = "--target wasm32-unknown-unknown";
           CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
           doCheck = false;
-          # crane ignores .cargo/config.toml rustflags, so pass the fixed-base
-          # self-contained link flags (recipe §2) via CARGO_ENCODED_RUSTFLAGS
-          # (0x1f-separated). Must stay in sync with .cargo/config.toml — these
-          # build each member at a fixed absolute base (single-package 0x50000)
-          # so `theater compose` can internalize memory + pack:alloc.
+          # crane ignores .cargo/config.toml rustflags, so pass the two plain-build
+          # link-args via CARGO_ENCODED_RUSTFLAGS (0x1f-separated). Must stay in
+          # sync with .cargo/config.toml. packr 0.11.0 = plain cargo build: the
+          # cdylib exports its own growable memory (--export-memory), no start
+          # (--no-entry); setup_guest!() links dlmalloc. No fixed-base, no compose.
           CARGO_ENCODED_RUSTFLAGS = builtins.concatStringsSep (builtins.fromJSON ''"\u001f"'') [
-            "-C" "link-arg=--import-memory"
-            "-C" "link-arg=--initial-memory=8388608"
-            "-C" "link-arg=--stack-first"
-            "-C" "link-arg=-zstack-size=262144"
-            "-C" "link-arg=--global-base=327680"
+            "-C" "link-arg=--export-memory"
             "-C" "link-arg=--no-entry"
-            "-C" "link-arg=--no-merge-data-segments"
           ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        # The compose-capable theater CLI (has `theater compose`) from the
-        # pinned input; `.theater` and `.default` both resolve to it.
+        # theater CLI from the pinned input — for the dev shell (`theater spawn`
+        # / `theater build --release` import-surface check); not used by the
+        # plain-build derivation.
         theaterBin = theater.packages.${system}.theater;
 
       in {
         packages.default = craneLib.buildPackage (commonArgs // {
-          # Recipe §Crane: one buildPackage pass, no shared deps-only artifact
-          # for the wasm32 self-contained member build.
+          # One buildPackage pass for the wasm32 plain build.
           cargoArtifacts = null;
-          # theater compose + binaryen (wasm-merge) + wasm-tools do the
-          # compose/verify inside the sandboxed derivation.
-          nativeBuildInputs = [ theaterBin pkgs.binaryen pkgs.wasm-tools ];
-          # Build the 3 bare members, then compose each with packr's bundled
-          # allocator into a self-contained <name>.composite.wasm and drop the
-          # bare member (the 0.10.x loader rejects bare members — deploy the
-          # composite). `theater compose` verifies imports-are-host-only and
-          # fails the build on a non-self-contained member.
+          # packr 0.11.0: plain cargo build, no compose. The cdylib is directly
+          # loadable — install the bare <name>.wasm (no allocator fuse, no
+          # binaryen/theater-compose step). Import surface (host theater:simple/*
+          # only) is asserted by the CI verify job.
           installPhaseCommand = ''
             mkdir -p $out
             for name in tickets_acceptor tickets_handler tickets_cli; do
               cp "target/wasm32-unknown-unknown/release/$name.wasm" "$out/$name.wasm"
-              theater compose "$out/$name.wasm" -o "$out/$name.composite.wasm"
-              rm "$out/$name.wasm"
             done
           '';
         });
@@ -144,18 +131,14 @@
         };
 
         devShells.default = craneLib.devShell {
-          # binaryen (wasm-merge) + wasm-tools are NEW vs the 0.8.1 PIC build:
-          # `theater compose` needs wasm-merge to fuse the member with packr's
-          # bundled allocator into the self-contained composite, and wasm-tools
-          # to validate + assert imports are host-only. `nix build` runs the
-          # compose in the sandbox; these are here for manual/local use.
-          packages = [ rustToolchain theaterBin pkgs.binaryen pkgs.wasm-tools pkgs.ripgrep ];
+          # wasm-tools for the local import-surface check (host theater:simple/*
+          # only). No binaryen: packr 0.11.0 is a plain cargo build — the compose
+          # step and its wasm-merge dependency are retired.
+          packages = [ rustToolchain theaterBin pkgs.wasm-tools pkgs.ripgrep ];
           shellHook = ''
             echo "tickets dev environment"
             echo "  cargo build --release --target wasm32-unknown-unknown"
-            # theater build <member> can't resolve a shared-workspace target dir;
-            # compose the prebuilt member instead (same as the flake installPhase).
-            echo "  theater compose target/wasm32-unknown-unknown/release/tickets_acceptor.wasm"
+            echo "  # verify: wasm-tools print <name>.wasm | grep '(import' -> theater:simple/* only"
             echo "  theater spawn acceptor/manifest.toml"
             echo "  ./cli/tickets list"
           '';
