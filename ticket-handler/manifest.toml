@@ -8,7 +8,7 @@ static_package = true
 # same THEATER_HOME (default `$HOME/.theater`).
 
 [[handler]]
-type = "runtime"
+type = "self"
 
 [[handler]]
 type = "tcp"
