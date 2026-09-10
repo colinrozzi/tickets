@@ -43,6 +43,39 @@ pub struct AcceptorState {
 }
 
 pack_types! {
+    // Mirror theater:simple/supervisor's types EXACTLY (case names + order) so
+    // the interface subset hash matches the handler-crate pact @ 00b0bf93.
+    // Pre-0.24 this actor imported `stop-child` + spawn -> result<_, string>;
+    // the canonical 0.24 supervisor has `stop-actor: func(id: actor-id)` and
+    // every op returns supervisor-error. Get this wrong and it compiles but
+    // fails to instantiate (unknown import / interface-hash mismatch at spawn).
+    type actor-id = string;
+
+    variant spawn-failure {
+        bad-manifest(string),
+        wasm-fetch(string),
+        handler-registry(string),
+        wasm-invalid(string),
+        interface-mismatch(string),
+        missing-interface(string),
+        missing-metadata(string),
+        init-failed(string),
+        child-failed(string),
+        child-stopped(string),
+        timeout(string),
+        internal(string),
+    }
+
+    variant supervisor-error {
+        actor-not-found(string),
+        out-of-view(string),
+        permission-denied(string),
+        invalid-argument(string),
+        spawn-failed(spawn-failure),
+        runtime-unavailable,
+        internal(string),
+    }
+
     imports {
         theater:simple/self {
             log: func(msg: string),
@@ -52,8 +85,8 @@ pack_types! {
             transfer: func(connection-id: string, target-actor: string) -> result<_, string>,
         }
         theater:simple/supervisor {
-            spawn: func(manifest: string, init-state: option<value>, wasm-bytes: option<list<u8>>) -> result<string, string>,
-            stop-child: func(child-id: string) -> result<_, string>,
+            spawn: func(manifest: string, init-state: option<value>, wasm-bytes: option<list<u8>>) -> result<string, supervisor-error>,
+            stop-actor: func(id: actor-id) -> result<_, supervisor-error>,
         }
         theater:simple/store {
             store-at-label: func(store-id: string, label: string, content: list<u8>) -> result<string, string>,
@@ -76,15 +109,42 @@ fn tcp_listen(address: String) -> Result<String, String>;
 #[import(module = "theater:simple/tcp", name = "transfer")]
 fn tcp_transfer(connection_id: String, target_actor: String) -> Result<(), String>;
 
+// spawn now returns result<string, supervisor-error> (a structured variant) — a
+// complex return type; import it raw and decode: Ok(string) = child id,
+// Err(supervisor-error) = surface the variant case name. In packr-abi 0.24 the
+// result comes back as Value::Result, NOT a generic Variant.
 #[import(module = "theater:simple/supervisor", name = "spawn")]
+fn supervisor_spawn_raw(
+    manifest: String,
+    init_state: Option<Value>,
+    wasm_bytes: Option<Vec<u8>>,
+) -> Value;
+
 fn supervisor_spawn(
     manifest: String,
     init_state: Option<Value>,
     wasm_bytes: Option<Vec<u8>>,
-) -> Result<String, String>;
+) -> Result<String, String> {
+    match supervisor_spawn_raw(manifest, init_state, wasm_bytes) {
+        Value::Result { value: Ok(ok), .. } => match *ok {
+            Value::String(id) => Ok(id),
+            _ => Err(String::from("unexpected ok payload shape")),
+        },
+        Value::Result { value: Err(err), .. } => {
+            let case = match *err {
+                Value::Variant { case_name, .. } => case_name,
+                _ => String::from("unknown"),
+            };
+            Err(format!("supervisor-error: {}", case))
+        }
+        _ => Err(String::from("unexpected result format")),
+    }
+}
 
-#[import(module = "theater:simple/supervisor", name = "stop-child")]
-fn supervisor_stop_child(child_id: String) -> Result<(), String>;
+// stop-actor returns result<_, supervisor-error>; the caller discards it, so
+// import it raw and ignore the decoded Value.
+#[import(module = "theater:simple/supervisor", name = "stop-actor")]
+fn supervisor_stop_actor(id: String) -> Value;
 
 #[import(module = "theater:simple/store", name = "store-at-label")]
 fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
@@ -222,7 +282,7 @@ fn try_handle_connection(connection_id: &str) -> Result<(), String> {
         .map_err(|e| format!("spawn handler failed: {}", e))?;
 
     if let Err(e) = tcp_transfer(connection_id.to_string(), handler_id.clone()) {
-        let _ = supervisor_stop_child(handler_id);
+        let _ = supervisor_stop_actor(handler_id);
         return Err(format!("transfer failed: {}", e));
     }
     Ok(())
