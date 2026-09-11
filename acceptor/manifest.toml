@@ -19,7 +19,7 @@ static_package = true
 initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\",\"handler_manifest\":\"/home/colin/work/actors/tickets/ticket-handler/manifest.toml\"}"
 
 [[handler]]
-type = "runtime"
+type = "self"
 
 [[handler]]
 type = "tcp"
@@ -30,3 +30,9 @@ type = "supervisor"
 [[handler]]
 type = "store"
 store_id = "tickets"
+
+# The acceptor spawns per-connection ticket-handler children via
+# theater:simple/supervisor, so it needs supervisor permission on the new
+# runtime's permission model.
+[permission_policy.supervisor]
+type = "inherit"
