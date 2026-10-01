@@ -13,9 +13,16 @@
     theater = {
       # Fleet transition rev (packr 0.24 / self.pact + engine-axis + in-module
       # state). Actors are plain cargo cdylibs on the in-module-state model, so
-      # the build no longer needs the theater CLI (no compose); this input is for
-      # the dev shell (`theater spawn`) + interface alignment with the new prod
-      # binary. Also the `theater-guest` source rev (see per-actor Cargo.toml).
+      # the build no longer needs the theater CLI (no compose); this input ONLY
+      # feeds the dev shell (`theater spawn`), NOT the released wasm.
+      #
+      # The released wasm's guest ABI is set by the `theater-guest` git rev in
+      # the per-actor Cargo.toml, which now targets d1a9f270 (v0.4.2 — the
+      # fleet-services supervisor's embedded theater; d1a9f270 is a guest-ABI
+      # superset of 00b0bf93, +host-side #221/#222). This dev-shell input
+      # intentionally trails at 00b0bf93 until a dev-box `nix flake update
+      # theater` regens flake.lock (narHash can't be computed in the toolchain-
+      # less container); the trailing CLI does not affect the release or prod.
       url = "github:colinrozzi/theater/00b0bf93fe69a231463d3ba918fa435c5f2a517d";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
