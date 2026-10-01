@@ -9,14 +9,18 @@ static_package = true
 #     "inbox_token":      "<inbox API bearer for tickets@colinrozzi.com>",
 #     "handler_manifest": "<file path | https:// | store:// reference to the
 #                          ticket-handler manifest the acceptor spawns per
-#                          connection>"
+#                          connection>",
+#     "listen_addr":      "<host:port the HTTP acceptor binds; OPTIONAL —
+#                          omitted falls back to 127.0.0.1:8443. Set per-deploy
+#                          so prod never collides with the inbox loopback
+#                          convention + caddy.>"
 #   }
 # The store handler below intentionally omits `base_path`: theater falls back
 # to `$THEATER_HOME/store/<store_id>` (default `$HOME/.theater/store/tickets`),
 # which is portable across dev and release. Operators that need a specific
 # store location (e.g. /var/lib/tickets on a VPS) set THEATER_HOME on the
 # theater process; nothing in this manifest needs to change per deploy.
-initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\",\"handler_manifest\":\"/home/colin/work/actors/tickets/ticket-handler/manifest.toml\"}"
+initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\",\"handler_manifest\":\"/home/colin/work/actors/tickets/ticket-handler/manifest.toml\",\"listen_addr\":\"127.0.0.1:8443\"}"
 
 [[handler]]
 type = "self"

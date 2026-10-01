@@ -149,7 +149,11 @@ fn supervisor_stop_actor(id: String) -> Value;
 #[import(module = "theater:simple/store", name = "store-at-label")]
 fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
 
-const LISTEN_ADDR: &str = "127.0.0.1:8443";
+/// Fallback listen address when `initial_state.listen_addr` is omitted. Keeps
+/// the historical dev default so existing dev manifests behave unchanged; prod
+/// sets `listen_addr` explicitly (loopback plaintext, bearer-authed — fronted
+/// by caddy/frontdoor).
+const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8443";
 
 const STORE_ID: &str = "tickets";
 const BEARER_TOKEN_LABEL: &str = "api-bearer-token";
@@ -171,6 +175,12 @@ struct Config {
     /// https:// URL, or a store:// reference. Set per-deploy so the
     /// acceptor is portable across dev + release.
     handler_manifest: String,
+    /// Address the HTTP acceptor binds (e.g. "127.0.0.1:8456"). Optional:
+    /// omitted falls back to `DEFAULT_LISTEN_ADDR`. Manifest-configurable so
+    /// the prod port never collides with the inbox loopback convention + caddy
+    /// — nothing is hardcoded per-deploy.
+    #[serde(default)]
+    listen_addr: Option<String>,
 }
 
 /// `result<_, string>::ok(())` — success, nothing to return.
@@ -232,13 +242,18 @@ fn init(config: Value) -> Value {
         return err_result(&e);
     }
 
-    let listener_id = match tcp_listen(String::from(LISTEN_ADDR)) {
+    let listen_addr = cfg
+        .listen_addr
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| String::from(DEFAULT_LISTEN_ADDR));
+    let listener_id = match tcp_listen(listen_addr.clone()) {
         Ok(id) => id,
         Err(e) => return err_result(&format!("listen failed: {}", e)),
     };
     log(format!(
         "[tickets-acceptor] HTTP listening on {} (id={}); handler_manifest={}",
-        LISTEN_ADDR, listener_id, cfg.handler_manifest
+        listen_addr, listener_id, cfg.handler_manifest
     ));
 
     AcceptorState::set(AcceptorState {
