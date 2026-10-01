@@ -261,7 +261,7 @@ dependencies = [
 [[package]]
 name = "theater-guest"
 version = "0.1.0"
-source = "git+https://github.com/colinrozzi/theater?rev=00b0bf93fe69a231463d3ba918fa435c5f2a517d#00b0bf93fe69a231463d3ba918fa435c5f2a517d"
+source = "git+https://github.com/colinrozzi/theater?rev=d1a9f270bdff0e96548e09bdbda6973292c21477#d1a9f270bdff0e96548e09bdbda6973292c21477"
 dependencies = [
  "packr-guest",
  "theater-guest-macros",
@@ -270,7 +270,7 @@ dependencies = [
 [[package]]
 name = "theater-guest-macros"
 version = "0.1.0"
-source = "git+https://github.com/colinrozzi/theater?rev=00b0bf93fe69a231463d3ba918fa435c5f2a517d#00b0bf93fe69a231463d3ba918fa435c5f2a517d"
+source = "git+https://github.com/colinrozzi/theater?rev=d1a9f270bdff0e96548e09bdbda6973292c21477#d1a9f270bdff0e96548e09bdbda6973292c21477"
 dependencies = [
  "proc-macro2",
  "quote",
