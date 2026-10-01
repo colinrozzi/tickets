@@ -29,14 +29,14 @@ type = "self"
 type = "tcp"
 
 [[handler]]
-type = "supervisor"
+type = "runtime"
 
 [[handler]]
 type = "store"
 store_id = "tickets"
 
 # The acceptor spawns per-connection ticket-handler children via
-# theater:simple/supervisor, so it needs supervisor permission on the new
-# runtime's permission model.
-[permission_policy.supervisor]
+# theater:simple/runtime.spawn (#204 dissolved the supervisor handler —
+# lifecycle is now a runtime primitive), so it needs runtime mutate permission.
+[permission_policy.runtime]
 type = "inherit"

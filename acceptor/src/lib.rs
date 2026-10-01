@@ -17,7 +17,7 @@
 //! `handler_manifest` is whatever `theater::utils::resolve_reference` will
 //! accept: a local file path for dev, an https URL for a released asset,
 //! or a store-content reference. The acceptor passes it through verbatim
-//! to `supervisor.spawn` per connection.
+//! to `runtime.spawn` per connection.
 
 #![no_std]
 extern crate alloc;
@@ -43,12 +43,12 @@ pub struct AcceptorState {
 }
 
 pack_types! {
-    // Mirror theater:simple/supervisor's types EXACTLY (case names + order) so
-    // the interface subset hash matches the handler-crate pact @ 00b0bf93.
-    // Pre-0.24 this actor imported `stop-child` + spawn -> result<_, string>;
-    // the canonical 0.24 supervisor has `stop-actor: func(id: actor-id)` and
-    // every op returns supervisor-error. Get this wrong and it compiles but
-    // fails to instantiate (unknown import / interface-hash mismatch at spawn).
+    // Mirror theater:simple/runtime's types EXACTLY (case names + order) so the
+    // imported-subset hash matches the host pact @ d1a9f270. #204 dissolved the
+    // supervisor handler — actor lifecycle (spawn / stop-actor) is now a runtime
+    // primitive on theater:simple/runtime, returning runtime-error. Get the
+    // variant shape wrong and it compiles but fails to instantiate (unknown
+    // import / interface-hash mismatch at spawn).
     type actor-id = string;
 
     variant spawn-failure {
@@ -66,13 +66,12 @@ pack_types! {
         internal(string),
     }
 
-    variant supervisor-error {
-        actor-not-found(string),
-        out-of-view(string),
+    variant runtime-error {
         permission-denied(string),
+        runtime-unavailable,
+        actor-not-found(string),
         invalid-argument(string),
         spawn-failed(spawn-failure),
-        runtime-unavailable,
         internal(string),
     }
 
@@ -84,9 +83,9 @@ pack_types! {
             listen: func(address: string) -> result<string, string>,
             transfer: func(connection-id: string, target-actor: string) -> result<_, string>,
         }
-        theater:simple/supervisor {
-            spawn: func(manifest: string, init-state: option<value>, wasm-bytes: option<list<u8>>) -> result<string, supervisor-error>,
-            stop-actor: func(id: actor-id) -> result<_, supervisor-error>,
+        theater:simple/runtime {
+            spawn: func(manifest: string, init-state: option<value>, wasm-bytes: option<list<u8>>) -> result<string, runtime-error>,
+            stop-actor: func(id: actor-id) -> result<_, runtime-error>,
         }
         theater:simple/store {
             store-at-label: func(store-id: string, label: string, content: list<u8>) -> result<string, string>,
@@ -109,23 +108,23 @@ fn tcp_listen(address: String) -> Result<String, String>;
 #[import(module = "theater:simple/tcp", name = "transfer")]
 fn tcp_transfer(connection_id: String, target_actor: String) -> Result<(), String>;
 
-// spawn now returns result<string, supervisor-error> (a structured variant) — a
+// spawn now returns result<string, runtime-error> (a structured variant) — a
 // complex return type; import it raw and decode: Ok(string) = child id,
-// Err(supervisor-error) = surface the variant case name. In packr-abi 0.24 the
+// Err(runtime-error) = surface the variant case name. In packr-abi 0.24 the
 // result comes back as Value::Result, NOT a generic Variant.
-#[import(module = "theater:simple/supervisor", name = "spawn")]
-fn supervisor_spawn_raw(
+#[import(module = "theater:simple/runtime", name = "spawn")]
+fn runtime_spawn_raw(
     manifest: String,
     init_state: Option<Value>,
     wasm_bytes: Option<Vec<u8>>,
 ) -> Value;
 
-fn supervisor_spawn(
+fn runtime_spawn(
     manifest: String,
     init_state: Option<Value>,
     wasm_bytes: Option<Vec<u8>>,
 ) -> Result<String, String> {
-    match supervisor_spawn_raw(manifest, init_state, wasm_bytes) {
+    match runtime_spawn_raw(manifest, init_state, wasm_bytes) {
         Value::Result { value: Ok(ok), .. } => match *ok {
             Value::String(id) => Ok(id),
             _ => Err(String::from("unexpected ok payload shape")),
@@ -135,16 +134,16 @@ fn supervisor_spawn(
                 Value::Variant { case_name, .. } => case_name,
                 _ => String::from("unknown"),
             };
-            Err(format!("supervisor-error: {}", case))
+            Err(format!("runtime-error: {}", case))
         }
         _ => Err(String::from("unexpected result format")),
     }
 }
 
-// stop-actor returns result<_, supervisor-error>; the caller discards it, so
+// stop-actor returns result<_, runtime-error>; the caller discards it, so
 // import it raw and ignore the decoded Value.
-#[import(module = "theater:simple/supervisor", name = "stop-actor")]
-fn supervisor_stop_actor(id: String) -> Value;
+#[import(module = "theater:simple/runtime", name = "stop-actor")]
+fn runtime_stop_actor(id: String) -> Value;
 
 #[import(module = "theater:simple/store", name = "store-at-label")]
 fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
@@ -170,7 +169,7 @@ struct Config {
     /// Bearer token the handler presents when calling the inbox API.
     inbox_token: String,
     /// Reference to the ticket-handler manifest, passed to
-    /// `supervisor.spawn` on each new connection. Accepts anything
+    /// `runtime.spawn` on each new connection. Accepts anything
     /// `theater::utils::resolve_reference` resolves: a file path, an
     /// https:// URL, or a store:// reference. Set per-deploy so the
     /// acceptor is portable across dev + release.
@@ -288,16 +287,16 @@ fn handle_connection(connection_id: String) -> Value {
 }
 
 fn try_handle_connection(connection_id: &str) -> Result<(), String> {
-    // Post theater PRs #58-60, supervisor.spawn auto-calls the child's
+    // runtime.spawn (the #204 lifecycle primitive) auto-calls the child's
     // actor.init before returning the id. We pass None for init-state so
     // the handler's manifest initial_state (none in our case) is used;
     // the handler's init ignores its arg anyway.
     let handler_manifest = AcceptorState::with(|s| s.handler_manifest.clone());
-    let handler_id = supervisor_spawn(handler_manifest, None, None)
+    let handler_id = runtime_spawn(handler_manifest, None, None)
         .map_err(|e| format!("spawn handler failed: {}", e))?;
 
     if let Err(e) = tcp_transfer(connection_id.to_string(), handler_id.clone()) {
-        let _ = supervisor_stop_actor(handler_id);
+        let _ = runtime_stop_actor(handler_id);
         return Err(format!("transfer failed: {}", e));
     }
     Ok(())

@@ -22,12 +22,15 @@
 #                         resolve to tenant t1 (the inbox is enforce=1 and t1
 #                         owns tickets@). Injected box-side at deploy, NOT here.
 #   __HANDLER_MANIFEST__  reference to the ticket-handler manifest the acceptor
-#                         supervisor-spawns per connection. Point at the
-#                         box-local deploy/ticket-handler.prod.toml (or a
-#                         tag-pinned URL of it) — do NOT use the release-
-#                         workflow auto-generated ticket-handler-<STAGE>.toml:
-#                         it still emits the pre-rename `type = "runtime"`
-#                         handler and will not load on theater 00b0bf93+.
+#                         runtime.spawns per connection. Point at the box-local
+#                         deploy/ticket-handler.prod.toml (or a tag-pinned URL
+#                         of it) — do NOT use the release-workflow auto-
+#                         generated ticket-handler-<STAGE>.toml: its first
+#                         handler is `type = "runtime"` where the handler needs
+#                         `type = "self"` (the self/init context — runtime→self
+#                         rename; and post-#204 a `runtime` handler is the
+#                         spawn capability the handler doesn't use), so it
+#                         lacks its init context and won't load on d1a9f270.
 #
 # listen_addr: prod binds 127.0.0.1:8456 (loopback plaintext, bearer-authed;
 # fronted by caddy/frontdoor). Chosen to avoid the inbox loopback convention +
@@ -52,15 +55,16 @@ type = "self"
 type = "tcp"
 
 [[handler]]
-type = "supervisor"
+type = "runtime"
 
 [[handler]]
 type = "store"
 store_id = "tickets"
 
 # The acceptor spawns per-connection ticket-handler children via
-# theater:simple/supervisor, so it needs supervisor permission on the new
-# runtime's permission model. (The pre-rename template omitted this, which
-# silently broke per-connection handler spawn.)
-[permission_policy.supervisor]
+# theater:simple/runtime.spawn (#204 dissolved the supervisor handler —
+# lifecycle is now a runtime primitive), so it needs runtime mutate permission.
+# (The pre-rename template omitted any spawn permission entirely, which silently
+# broke per-connection handler spawn.)
+[permission_policy.runtime]
 type = "inherit"
