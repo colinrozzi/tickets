@@ -1,8 +1,17 @@
 # tickets prod deploy runbook
 
+> **SUPERSEDED (2026-10) by the supervisor-managed deploy model.** Prod tickets
+> now runs as a supervisor INIT-ROSTER actor + push-spawn redeploy, not a
+> standalone systemd unit. The current manifests are `deploy/manifest.prod.toml`
+> (acceptor) + `deploy/ticket-handler.prod.toml` (per-connection handler).
+> Key deltas vs this runbook: prod port is **127.0.0.1:8456** (now
+> `initial_state.listen_addr`, not hardcoded); handlers use `type = "self"` on
+> theater 00b0bf93+ (the pre-rename `runtime` will not load); the acceptor
+> manifest carries `[permission_policy.supervisor]`. The store-location /
+> `THEATER_HOME` and smoke-test sections below still apply.
+
 Standing up the tickets-acceptor on the `mail.colinrozzi.com` box as the
-backend tickets-ui POSTs/GETs against (`127.0.0.1:8443`, loopback plaintext,
-bearer auth). Mirrors the inbox systemd deploy (`inbox/RUNBOOK.md` §7–9); the
+backend tickets-ui POSTs/GETs against (loopback plaintext, bearer auth). Mirrors the inbox systemd deploy (`inbox/RUNBOOK.md` §7–9); the
 tickets-specific difference is that the manifests are deploy-agnostic — store
 location comes from `THEATER_HOME`, not a per-deploy `base_path` edit.
 

@@ -1,31 +1,52 @@
-# Prod tickets-acceptor manifest — deployed to /var/lib/tickets/manifest.toml
-# on the mail.colinrozzi.com box. This is a TEMPLATE: the operator fills the
-# three __PLACEHOLDER__ values at deploy time (secrets never live in git).
+# Prod tickets-acceptor manifest — supervisor-managed on the linode box.
 #
-# Structure is identical to acceptor/manifest.toml in the repo; only `package`
-# (a release-asset URL instead of a local build path) and `initial_state`
-# (real values instead of dev defaults) differ.
+# Deploy model (2026-10): a dedicated tickets supervisor unit stands this up.
+# The base deploy lives in the supervisor INIT ROSTER (survives process
+# restart); push-spawn redeploys must update BOTH the live actor AND this
+# roster manifest or a supervisor restart reverts to baseline.
 #
-#   __RELEASE_TAG__   e.g. release-20260706-2d428a7
-#   __STAGE_TAG__     the tag minus the "release-" prefix, e.g. 20260706-2d428a7
-#   __API_TOKEN__     the tickets HTTP API bearer (generated for this deploy;
-#                     tickets-ui gets the same value as __TICKETS_API_TOKEN__)
-#   __INBOX_BEARER__  the shared inbox API bearer the handler presents when it
-#                     POSTs notification emails as tickets@colinrozzi.com
-#                     (same token inbox.service uses; read it on the box).
+# This is a TEMPLATE — the operator fills the __PLACEHOLDER__ values box-side
+# (secrets never live in git):
 #
-# The store handler intentionally omits base_path: theater resolves it to
-# $THEATER_HOME/store/tickets. tickets.service sets THEATER_HOME=/mnt/main-
-# volume/tickets, so the store lands at /mnt/main-volume/tickets/store/tickets.
+#   __ACCEPTOR_PACKAGE__  the tickets_acceptor wasm. Either a release-asset URL
+#                         (https://github.com/colinrozzi/tickets/releases/
+#                         download/<TAG>/tickets_acceptor-<STAGE>.wasm) or a
+#                         box-local path if the supervisor push-spawns the
+#                         bytes ("bare box fetches nothing"). The acceptor's
+#                         bytes may also be delivered over :9000 push-spawn, in
+#                         which case this is the roster-baseline fallback.
+#   __API_TOKEN__         the tickets HTTP API bearer (handed over by
+#                         tickets-dev out of band; tickets-ui gets the same
+#                         value).
+#   __INBOX_BEARER__      the inbox API use-cap bearer for tickets@ — MUST
+#                         resolve to tenant t1 (the inbox is enforce=1 and t1
+#                         owns tickets@). Injected box-side at deploy, NOT here.
+#   __HANDLER_MANIFEST__  reference to the ticket-handler manifest the acceptor
+#                         supervisor-spawns per connection. Point at the
+#                         box-local deploy/ticket-handler.prod.toml (or a
+#                         tag-pinned URL of it) — do NOT use the release-
+#                         workflow auto-generated ticket-handler-<STAGE>.toml:
+#                         it still emits the pre-rename `type = "runtime"`
+#                         handler and will not load on theater 00b0bf93+.
+#
+# listen_addr: prod binds 127.0.0.1:8456 (loopback plaintext, bearer-authed;
+# fronted by caddy/frontdoor). Chosen to avoid the inbox loopback convention +
+# the old 8443/8445 tickets ports. Manifest-configurable — change here if the
+# box needs a different port.
+#
+# The store handler omits base_path: theater resolves it to
+# $THEATER_HOME/store/tickets. Set THEATER_HOME on the supervisor-spawned
+# process (e.g. /mnt/main-volume/tickets) so ticket state is durable + survives
+# wasm redeploys.
 
 name = "tickets-acceptor"
 version = "0.1.0"
-package = "https://github.com/colinrozzi/tickets/releases/download/__RELEASE_TAG__/tickets_acceptor-__STAGE_TAG__.wasm"
+package = "__ACCEPTOR_PACKAGE__"
 static_package = true
-initial_state = "{\"api_token\":\"__API_TOKEN__\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"__INBOX_BEARER__\",\"handler_manifest\":\"https://github.com/colinrozzi/tickets/releases/download/__RELEASE_TAG__/ticket-handler-__STAGE_TAG__.toml\"}"
+initial_state = "{\"api_token\":\"__API_TOKEN__\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"__INBOX_BEARER__\",\"handler_manifest\":\"__HANDLER_MANIFEST__\",\"listen_addr\":\"127.0.0.1:8456\"}"
 
 [[handler]]
-type = "runtime"
+type = "self"
 
 [[handler]]
 type = "tcp"
@@ -36,3 +57,10 @@ type = "supervisor"
 [[handler]]
 type = "store"
 store_id = "tickets"
+
+# The acceptor spawns per-connection ticket-handler children via
+# theater:simple/supervisor, so it needs supervisor permission on the new
+# runtime's permission model. (The pre-rename template omitted this, which
+# silently broke per-connection handler spawn.)
+[permission_policy.supervisor]
+type = "inherit"

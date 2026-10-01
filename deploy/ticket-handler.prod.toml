@@ -1,0 +1,37 @@
+# Prod ticket-handler manifest — spawned per HTTP connection by the
+# tickets-acceptor (its initial_state.handler_manifest points here).
+#
+# This is the CORRECT prod handler manifest for theater 00b0bf93+ (packr 0.24,
+# in-module-state): first handler is `self` (post runtime->self rename). Use
+# THIS file as the acceptor's handler_manifest reference — the release
+# workflow's auto-generated ticket-handler-<STAGE>.toml still emits the stale
+# `type = "runtime"` handler and will not load. (The release workflow cannot be
+# fixed from this repo: the gh token lacks the `workflow` scope.)
+#
+# __HANDLER_PACKAGE__ : the tickets_handler wasm. A release-asset URL
+#   (https://github.com/colinrozzi/tickets/releases/download/<TAG>/
+#   tickets_handler-<STAGE>.wasm) or a box-local path for the
+#   "bare box fetches nothing" push-spawn model.
+#
+# store_id matches the acceptor's ("tickets") so both share the same backing
+# store under the same THEATER_HOME. base_path omitted on purpose (see acceptor
+# manifest). client_tls auto-upgrades the outbound connection to TLS so the
+# notification bridge can POST to the inbox over :443.
+
+name = "tickets-handler"
+version = "0.1.0"
+package = "__HANDLER_PACKAGE__"
+static_package = true
+
+[[handler]]
+type = "self"
+
+[[handler]]
+type = "tcp"
+
+[handler.client_tls]
+enabled = true
+
+[[handler]]
+type = "store"
+store_id = "tickets"
