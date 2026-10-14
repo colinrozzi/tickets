@@ -12,7 +12,7 @@ What works:
 
 - `GET /healthz` — unauthenticated liveness probe; returns `200 {"status":"ok"}`
 - `POST /v1/tickets` — create a ticket
-- `GET /v1/tickets[?status=&assignee=]` — list, optionally filtered
+- `GET /v1/tickets[?status=&assignee=&reporter=]` — list, optionally filtered (filters AND together)
 - `GET /v1/tickets/<id>` — show one
 - `POST /v1/tickets/<id>/status` — set status (`open`, `in-progress`, `done`, `closed`); any-to-any transitions
 - `POST /v1/tickets/<id>/comment` — append a comment (`{author, body}`)

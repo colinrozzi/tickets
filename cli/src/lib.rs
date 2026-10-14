@@ -217,6 +217,12 @@ fn run_list(req: &CliCommand) -> Result<(), String> {
         }
         query.push_str(&format!("assignee={}", url_encode(a)));
     }
+    if let Some(r) = &req.reporter {
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str(&format!("reporter={}", url_encode(r)));
+    }
     let path = if query.is_empty() {
         String::from("/v1/tickets")
     } else {

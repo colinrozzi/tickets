@@ -40,7 +40,8 @@ usage() {
 usage: tickets <command> [args]
 
 commands:
-  list [--status S] [--assignee A]      list tickets, optionally filtered
+  list [--status S] [--assignee A] [--reporter R]
+                                        list tickets, optionally filtered
   new --title T --reporter R --assignee A [--body B]
                                         create a new ticket
   show <id>                             show one ticket by id
@@ -89,17 +90,19 @@ build_state() {
 
 case "$cmd" in
   list)
-    status= assignee=
+    status= assignee= reporter=
     while [ $# -gt 0 ]; do
       case "$1" in
         --status) status=$2; shift 2 ;;
         --assignee) assignee=$2; shift 2 ;;
+        --reporter) reporter=$2; shift 2 ;;
         *) usage ;;
       esac
     done
     args=()
     [ -n "$status" ] && args+=(status "$status")
     [ -n "$assignee" ] && args+=(assignee "$assignee")
+    [ -n "$reporter" ] && args+=(reporter "$reporter")
     state=$(build_state list "${args[@]+"${args[@]}"}")
     ;;
   new)
