@@ -403,6 +403,16 @@ fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
         Some(i) => i,
         None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
     };
+    // Idempotent no-op: setting a ticket to the status it already holds is a
+    // true no-op. Transitions are any-to-any, so this is a legitimate request
+    // (and even exercised by tests/status.sh's done -> done case) — return 200
+    // with the unchanged ticket, but skip the store rewrite and the
+    // notification emails. Only a genuine transition persists + notifies.
+    if all[idx].status == req.status {
+        let body = serde_json::to_vec(&all[idx]).unwrap_or_default();
+        return http_response(200, body);
+    }
+
     let old_status = all[idx].status.clone();
     all[idx].status = req.status;
     let updated = all[idx].clone();

@@ -67,15 +67,25 @@ code=${r%%	*}; body=${r#*	}
 }
 
 echo
-echo "test 2: idempotent done -> done"
+echo "test 2: idempotent done -> done (second set is a side-effect-free no-op)"
+# First done: a genuine in-progress -> done transition (persists + notifies).
 r=$(curl_status POST "/v1/tickets/$id/status" '{"status":"done"}')
-code=${r%%	*}
+code=${r%%	*}; body1=${r#*	}
 [ "$code" = "200" ] && ok "first done transition (200)" || bad "first done: got $code"
+# Second done: status already == done, so this must be a true no-op — still
+# 200, and the returned ticket must be byte-identical to the first (no store
+# rewrite, no field churn). We can't read the handler log over HTTP, so the
+# unchanged body is our observable proxy for "no side effects".
 r=$(curl_status POST "/v1/tickets/$id/status" '{"status":"done"}')
-code=${r%%	*}; body=${r#*	}
-[ "$code" = "200" ] && echo "$body" | grep -q '"status":"done"' \
-  && ok "second done transition still 200 + status:done" \
-  || bad "second done: got $code, body=$body"
+code=${r%%	*}; body2=${r#*	}
+if [ "$code" = "200" ] && echo "$body2" | grep -q '"status":"done"'; then
+  ok "second done still 200 + status:done"
+else
+  bad "second done: got $code, body=$body2"
+fi
+[ "$body2" = "$body1" ] \
+  && ok "second done is a no-op (ticket unchanged)" \
+  || bad "second done changed the ticket; before=$body1 after=$body2"
 
 echo
 echo "test 3: invalid status value rejected (400)"
