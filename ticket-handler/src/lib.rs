@@ -115,6 +115,12 @@ struct Ticket {
     assignee: String,
     status: String,
     created_at: u64,
+    /// Last-activity timestamp: set equal to `created_at` on create, then
+    /// bumped to `timer_now()` on every subsequent change (status transition,
+    /// new comment). Older stored tickets won't have this field — `default`
+    /// makes them deserialize as `0` (same back-compat trick as `comments`).
+    #[serde(default)]
+    updated_at: u64,
     /// Append-only comment thread. Older stored tickets (pre phase-2 part-2)
     /// won't have this field — `default` makes them deserialize as empty.
     #[serde(default)]
@@ -352,6 +358,9 @@ fn handle_create(request_str: &str) -> Vec<u8> {
 
     let mut all = load_tickets();
     let next_id = all.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+    // One `timer_now()` read so a freshly created ticket has
+    // `updated_at == created_at` exactly.
+    let now = timer_now();
     let new = Ticket {
         id: next_id,
         title: req.title,
@@ -359,7 +368,8 @@ fn handle_create(request_str: &str) -> Vec<u8> {
         reporter: req.reporter,
         assignee: req.assignee,
         status: String::from("open"),
-        created_at: timer_now(),
+        created_at: now,
+        updated_at: now,
         comments: Vec::new(),
     };
     all.push(new.clone());
@@ -415,6 +425,7 @@ fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
 
     let old_status = all[idx].status.clone();
     all[idx].status = req.status;
+    all[idx].updated_at = timer_now();
     let updated = all[idx].clone();
     save_tickets(&all);
 
@@ -457,6 +468,7 @@ fn handle_add_comment(id_str: &str, request_str: &str) -> Vec<u8> {
         created_at: timer_now(),
     };
     all[idx].comments.push(comment.clone());
+    all[idx].updated_at = timer_now();
     let updated = all[idx].clone();
     save_tickets(&all);
 

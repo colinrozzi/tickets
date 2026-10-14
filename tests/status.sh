@@ -54,9 +54,24 @@ fi
 # Parse id without jq — grep the first integer after `"id":`.
 id=$(printf '%s' "$create_body" | grep -oE '"id":[0-9]+' | head -1 | grep -oE '[0-9]+')
 echo "created ticket #$id"
+
+# Extract a numeric top-level field from a ticket JSON body (no jq).
+num_field() { printf '%s' "$1" | grep -oE "\"$2\":[0-9]+" | head -1 | grep -oE '[0-9]+'; }
+
+created_at=$(num_field "$create_body" created_at)
+created_updated_at=$(num_field "$create_body" updated_at)
+echo "test 0: created ticket has updated_at == created_at"
+if [ -n "$created_at" ] && [ "$created_updated_at" = "$created_at" ]; then
+  ok "updated_at ($created_updated_at) == created_at ($created_at) on create"
+else
+  bad "expected updated_at == created_at on create; created_at=$created_at updated_at=$created_updated_at"
+fi
 echo
 
 echo "test 1: open -> in-progress"
+# Sleep so timer_now() is guaranteed to advance even at second granularity —
+# we assert below that the transition bumped updated_at past created_at.
+sleep 1
 r=$(curl_status POST "/v1/tickets/$id/status" '{"status":"in-progress"}')
 code=${r%%	*}; body=${r#*	}
 [ "$code" = "200" ] || { bad "expected 200, got $code: $body"; }
@@ -64,6 +79,13 @@ code=${r%%	*}; body=${r#*	}
   echo "$body" | grep -q '"status":"in-progress"' \
     && ok "status updated to in-progress" \
     || bad "response missing status:in-progress; body=$body"
+  bumped_updated_at=$(num_field "$body" updated_at)
+  if [ -n "$bumped_updated_at" ] && [ -n "$created_at" ] \
+     && [ "$bumped_updated_at" -gt "$created_at" ]; then
+    ok "updated_at advanced after status change ($created_at -> $bumped_updated_at)"
+  else
+    bad "updated_at did not advance; created_at=$created_at updated_at=$bumped_updated_at body=$body"
+  fi
 }
 
 echo
