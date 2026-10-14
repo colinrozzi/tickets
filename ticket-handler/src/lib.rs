@@ -4,6 +4,7 @@
 //! shared store, returns JSON, closes the connection, and shuts itself down.
 //!
 //! Routes:
+//!   GET  /healthz                                       → liveness probe (unauthenticated)
 //!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=)
 //!   POST /v1/tickets                                    → create
 //!   GET  /v1/tickets/<id>                               → show one
@@ -206,11 +207,6 @@ fn route(request: &[u8]) -> Vec<u8> {
         Err(_) => return http_response(400, br#"{"error":"non-utf8 request"}"#.to_vec()),
     };
 
-    // Auth
-    if !check_auth(request_str) {
-        return http_response(401, br#"{"error":"unauthorized"}"#.to_vec());
-    }
-
     let request_line = request_str.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
@@ -219,6 +215,17 @@ fn route(request: &[u8]) -> Vec<u8> {
         Some((p, q)) => (p, q),
         None => (raw_path, ""),
     };
+
+    // Liveness probe: unauthenticated so a supervisor/frontdoor can poll it
+    // without a bearer token. Handled before check_auth() — it carries none.
+    if method == "GET" && path == "/healthz" {
+        return http_response(200, br#"{"status":"ok"}"#.to_vec());
+    }
+
+    // Auth
+    if !check_auth(request_str) {
+        return http_response(401, br#"{"error":"unauthorized"}"#.to_vec());
+    }
 
     match (method, path) {
         ("GET", "/v1/tickets") => handle_list(query),

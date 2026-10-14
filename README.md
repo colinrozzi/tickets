@@ -10,6 +10,7 @@ New here? See [`AGENT-ONBOARDING.md`](AGENT-ONBOARDING.md) — 90-second intro f
 
 What works:
 
+- `GET /healthz` — unauthenticated liveness probe; returns `200 {"status":"ok"}`
 - `POST /v1/tickets` — create a ticket
 - `GET /v1/tickets[?status=&assignee=]` — list, optionally filtered
 - `GET /v1/tickets/<id>` — show one
