@@ -189,9 +189,77 @@ fn init(_config: Value) -> Value {
     ok_unit()
 }
 
+/// Upper bound on how many bytes we'll buffer for a single inbound request
+/// before giving up. Guards against a malformed/endless stream (no header
+/// terminator, or a `Content-Length` that never arrives) growing unbounded.
+/// 16 MiB is far above any real ticket payload.
+const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read a complete HTTP request off `connection_id`.
+///
+/// The theater `tcp.receive` host call is *partial*: it returns whatever bytes
+/// are currently buffered, not the whole request. A request split across TCP
+/// segments, or whose body exceeds the first 64 KiB chunk, therefore arrives in
+/// pieces — a single `tcp_receive` can truncate it and make `route` reject an
+/// otherwise-valid request (spurious 400 "missing body" / JSON parse error).
+///
+/// Accumulate chunks until we've seen the `\r\n\r\n` header terminator and, if a
+/// `Content-Length` header is present, that many body bytes. An empty read or
+/// `Err` is treated as EOF. This mirrors the response read loop in `inbox_post`;
+/// the one difference is that a request with no `Content-Length` (e.g. a `GET`)
+/// completes as soon as the header terminator is seen, rather than reading to
+/// EOF the way a `Connection: close` response does.
+fn read_full_request(connection_id: &str) -> Vec<u8> {
+    let mut all = Vec::new();
+    let mut body_start: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        if let (Some(hs), Some(cl)) = (body_start, content_length) {
+            if all.len() >= hs + cl {
+                break;
+            }
+        }
+        if all.len() >= MAX_REQUEST_BYTES {
+            break;
+        }
+        let chunk = match tcp_receive(connection_id.to_string(), 65536) {
+            Ok(c) => c,
+            // Connection reset / closed without more data — report what we have.
+            Err(_) => break,
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        all.extend_from_slice(&chunk);
+
+        if body_start.is_none() {
+            if let Some(idx) = find_subseq(&all, b"\r\n\r\n") {
+                body_start = Some(idx + 4);
+                let header_str = core::str::from_utf8(&all[..idx]).unwrap_or("");
+                for line in header_str.split("\r\n") {
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            if let Ok(n) = value.trim().parse::<usize>() {
+                                content_length = Some(n);
+                            }
+                        }
+                    }
+                }
+                // No Content-Length (e.g. GET): the request ends at the header
+                // terminator, so stop once we've seen it.
+                if content_length.is_none() {
+                    content_length = Some(0);
+                }
+            }
+        }
+    }
+    all
+}
+
 #[export(name = "theater:simple/tcp-client.handle-connection-transfer")]
 fn handle_connection_transfer(connection_id: String) -> Value {
-    let request = tcp_receive(connection_id.clone(), 65536).unwrap_or_default();
+    let request = read_full_request(&connection_id);
     let response = route(&request);
 
     if let Err(e) = tcp_send(connection_id.clone(), response) {
