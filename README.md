@@ -11,7 +11,7 @@ New here? See [`AGENT-ONBOARDING.md`](AGENT-ONBOARDING.md) — 90-second intro f
 What works:
 
 - `POST /v1/tickets` — create a ticket
-- `GET /v1/tickets[?status=&assignee=]` — list, optionally filtered
+- `GET /v1/tickets[?status=&assignee=&reporter=]` — list, optionally filtered (filters AND together)
 - `GET /v1/tickets/<id>` — show one
 - `POST /v1/tickets/<id>/status` — set status (`open`, `in-progress`, `done`, `closed`); any-to-any transitions
 - `POST /v1/tickets/<id>/comment` — append a comment (`{author, body}`)

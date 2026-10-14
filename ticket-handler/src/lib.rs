@@ -4,7 +4,7 @@
 //! shared store, returns JSON, closes the connection, and shuts itself down.
 //!
 //! Routes:
-//!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=)
+//!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=, ?reporter=)
 //!   POST /v1/tickets                                    → create
 //!   GET  /v1/tickets/<id>                               → show one
 //!   POST /v1/tickets/<id>/status                        → set status
@@ -287,7 +287,7 @@ fn extract_bearer(request_str: &str) -> Option<String> {
 // ============================================================================
 
 fn handle_list(query: &str) -> Vec<u8> {
-    let (status_filter, assignee_filter) = parse_query(query);
+    let (status_filter, assignee_filter, reporter_filter) = parse_query(query);
     let all = load_tickets();
     let filtered: Vec<Ticket> = all
         .into_iter()
@@ -297,6 +297,10 @@ fn handle_list(query: &str) -> Vec<u8> {
         })
         .filter(|t| match &assignee_filter {
             Some(a) => &t.assignee == a,
+            None => true,
+        })
+        .filter(|t| match &reporter_filter {
+            Some(r) => &t.reporter == r,
             None => true,
         })
         .collect();
@@ -469,20 +473,22 @@ fn save_tickets(tickets: &[Ticket]) {
 // Helpers
 // ============================================================================
 
-fn parse_query(query: &str) -> (Option<String>, Option<String>) {
+fn parse_query(query: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut status = None;
     let mut assignee = None;
+    let mut reporter = None;
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             let decoded = url_decode(v);
             match k {
                 "status" => status = Some(decoded),
                 "assignee" => assignee = Some(decoded),
+                "reporter" => reporter = Some(decoded),
                 _ => {}
             }
         }
     }
-    (status, assignee)
+    (status, assignee, reporter)
 }
 
 fn url_encode(s: &str) -> String {
