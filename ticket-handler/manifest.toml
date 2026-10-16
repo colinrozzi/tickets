@@ -19,3 +19,13 @@ enabled = true
 [[handler]]
 type = "store"
 store_id = "tickets"
+
+# Needed so theater:simple/message-server-host.request resolves at
+# instantiation: that host function is registered by the message-server handler.
+# The handler only *sends* (routes writes to the singleton ticket-store and
+# awaits the reply) — it never calls register(), so it joins no mailbox and
+# exports no receive-side interface; the handler stays a pure HTTP⇄message
+# adapter. Without this handler the actor fails to instantiate on the unknown
+# `request` import.
+[[handler]]
+type = "message-server"

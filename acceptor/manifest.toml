@@ -10,6 +10,11 @@ static_package = true
 #     "handler_manifest": "<file path | https:// | store:// reference to the
 #                          ticket-handler manifest the acceptor spawns per
 #                          connection>",
+#     "store_manifest":   "<file path | https:// | store:// reference to the
+#                          ticket-store manifest the acceptor spawns ONCE at
+#                          init — the singleton serial writer of tickets-list.
+#                          The PROD deploy config must set this + bundle the
+#                          ticket-store wasm/manifest alongside the handler's.>",
 #     "listen_addr":      "<host:port the HTTP acceptor binds; OPTIONAL —
 #                          omitted falls back to 127.0.0.1:8443. Set per-deploy
 #                          so prod never collides with the inbox loopback
@@ -20,7 +25,7 @@ static_package = true
 # which is portable across dev and release. Operators that need a specific
 # store location (e.g. /var/lib/tickets on a VPS) set THEATER_HOME on the
 # theater process; nothing in this manifest needs to change per deploy.
-initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\",\"handler_manifest\":\"/home/colin/work/actors/tickets/ticket-handler/manifest.toml\",\"listen_addr\":\"127.0.0.1:8443\"}"
+initial_state = "{\"api_token\":\"dev-token-change-me\",\"inbox_api\":\"mail.colinrozzi.com:443\",\"inbox_token\":\"replace-me-before-deploy\",\"handler_manifest\":\"/home/colin/work/actors/tickets/ticket-handler/manifest.toml\",\"store_manifest\":\"/home/colin/work/actors/tickets/ticket-store/manifest.toml\",\"listen_addr\":\"127.0.0.1:8443\"}"
 
 [[handler]]
 type = "self"

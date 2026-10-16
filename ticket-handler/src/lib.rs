@@ -30,11 +30,15 @@ use theater_guest::State;
 
 packr_guest::setup_guest!();
 
-/// Empty in-module state — the handler's real data lives in the shared store,
-/// loaded per-request. `#[derive(State)]` generates the module cell + the
-/// `theater:simple/actor.get-state` export (keeps the actor inspectable).
+/// In-module state: the singleton ticket-store's actor-id, seeded in `init` from
+/// the init-state the acceptor passes. Writes route to this id via `request`;
+/// reads still hit the shared store directly. `#[derive(State)]` generates the
+/// module cell + the `theater:simple/actor.get-state` export (keeps the actor
+/// inspectable).
 #[derive(Clone, GraphValue, State)]
-pub struct HandlerState {}
+pub struct HandlerState {
+    pub store_actor_id: String,
+}
 
 pack_types! {
     imports {
@@ -51,10 +55,13 @@ pack_types! {
         theater:simple/store {
             get: func(store-id: string, content-ref: string) -> result<list<u8>, string>,
             get-by-label: func(store-id: string, label: string) -> result<option<string>, string>,
-            store-at-label: func(store-id: string, label: string, content: list<u8>) -> result<string, string>,
         }
-        theater:simple/timer {
-            now: func() -> u64,
+        theater:simple/message-server-host {
+            // actor-id is a plain string (same as the acceptor's
+            // `type actor-id = string`). Used to route writes to the singleton
+            // ticket-store and await its reply. Subset of the host interface —
+            // only `request` is imported.
+            request: func(actor-id: string, msg: list<u8>) -> result<list<u8>, string>,
         }
     }
     exports {
@@ -89,11 +96,10 @@ fn store_get(store_id: String, content_ref: String) -> Result<Vec<u8>, String>;
 #[import(module = "theater:simple/store", name = "get-by-label")]
 fn store_get_by_label(store_id: String, label: String) -> Result<Option<String>, String>;
 
-#[import(module = "theater:simple/store", name = "store-at-label")]
-fn store_store_at_label(store_id: String, label: String, content: Vec<u8>) -> Result<String, String>;
-
-#[import(module = "theater:simple/timer", name = "now")]
-fn timer_now() -> u64;
+// Route a write request to the singleton ticket-store and await its reply.
+// Err(_) = store unreachable / not spawned → the handler returns 503.
+#[import(module = "theater:simple/message-server-host", name = "request")]
+fn request(actor_id: String, msg: Vec<u8>) -> Result<Vec<u8>, String>;
 
 const STORE_ID: &str = "tickets";
 const BEARER_TOKEN_LABEL: &str = "api-bearer-token";
@@ -122,9 +128,10 @@ struct Ticket {
     project: String,
     created_at: u64,
     /// Last-activity timestamp: set equal to `created_at` on create, then
-    /// bumped to `timer_now()` on every subsequent change (status transition,
-    /// new comment). Older stored tickets won't have this field — `default`
-    /// makes them deserialize as `0` (same back-compat trick as `comments`).
+    /// bumped on every subsequent change (status transition, new comment). The
+    /// ticket-store owns these timestamps now; the handler only reads them back.
+    /// Older stored tickets won't have this field — `default` makes them
+    /// deserialize as `0` (same back-compat trick as `comments`).
     #[serde(default)]
     updated_at: u64,
     /// Append-only comment thread. Older stored tickets (pre phase-2 part-2)
@@ -180,6 +187,53 @@ struct InboxSend<'a> {
 const VALID_STATUSES: &[&str] = &["open", "in-progress", "done", "closed"];
 
 // ============================================================================
+// ticket-store wire contract (handler → store request / store → handler reply)
+// ============================================================================
+
+/// `{"op":"create",title,body,reporter,assignee,project}`.
+#[derive(Serialize)]
+struct CreateRequest<'a> {
+    op: &'a str,
+    title: &'a str,
+    body: &'a str,
+    reporter: &'a str,
+    assignee: &'a str,
+    project: &'a str,
+}
+
+/// `{"op":"set_status",id,status}`.
+#[derive(Serialize)]
+struct SetStatusStoreRequest<'a> {
+    op: &'a str,
+    id: u64,
+    status: &'a str,
+}
+
+/// `{"op":"add_comment",id,author,body}`.
+#[derive(Serialize)]
+struct AddCommentStoreRequest<'a> {
+    op: &'a str,
+    id: u64,
+    author: &'a str,
+    body: &'a str,
+}
+
+/// The store's reply envelope. Success: `{"ok":true,"ticket":{..}}` (and, for
+/// set_status, `"prev_status":".."`). Failure: `{"ok":false,"error":".."}`.
+/// Every field past `ok` is optional so one struct decodes all three ops'
+/// success + failure shapes.
+#[derive(Deserialize)]
+struct StoreResponse {
+    ok: bool,
+    #[serde(default)]
+    ticket: Option<Ticket>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    prev_status: Option<String>,
+}
+
+// ============================================================================
 // Actor entry points
 // ============================================================================
 
@@ -194,8 +248,16 @@ fn ok_unit() -> Value {
 }
 
 #[export(name = "theater:simple/actor.init")]
-fn init(_config: Value) -> Value {
-    HandlerState::set(HandlerState {});
+fn init(config: Value) -> Value {
+    // The acceptor passes the singleton ticket-store's actor-id as init-state
+    // (a Value::String). Hold it to route writes. If it's absent or not a
+    // string (misconfiguration), store an empty id — write attempts then 503
+    // cleanly rather than messaging a bogus actor.
+    let store_actor_id = match config {
+        Value::String(id) => id,
+        _ => String::new(),
+    };
+    HandlerState::set(HandlerState { store_actor_id });
     ok_unit()
 }
 
@@ -438,29 +500,31 @@ fn handle_create(request_str: &str) -> Vec<u8> {
         );
     }
 
-    let mut all = load_tickets();
-    let next_id = all.iter().map(|t| t.id).max().unwrap_or(0) + 1;
-    // One `timer_now()` read so a freshly created ticket has
-    // `updated_at == created_at` exactly.
-    let now = timer_now();
-    let new = Ticket {
-        id: next_id,
-        title: req.title,
-        body: req.body,
-        reporter: req.reporter,
-        assignee: req.assignee,
-        status: String::from("open"),
-        project: req.project,
-        created_at: now,
-        updated_at: now,
-        comments: Vec::new(),
+    // Validation passed — hand the write to the singleton store (it assigns the
+    // id + timestamps and persists). Id assignment is NOT done here anymore:
+    // that was the racy read-modify-write the store serializes.
+    let store_req = CreateRequest {
+        op: "create",
+        title: &req.title,
+        body: &req.body,
+        reporter: &req.reporter,
+        assignee: &req.assignee,
+        project: &req.project,
     };
-    all.push(new.clone());
-    save_tickets(&all);
+    let resp = match send_write(&store_req) {
+        Ok(r) => r,
+        Err(()) => return store_unavailable(),
+    };
+    let ticket = match write_ok_ticket(&resp) {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
 
-    notify_created(&new);
+    // Notification fires AFTER the store commits, using the returned ticket, so
+    // the serialized write path is never blocked on the outbound POST.
+    notify_created(ticket);
 
-    let body = serde_json::to_vec(&new).unwrap_or_default();
+    let body = serde_json::to_vec(ticket).unwrap_or_default();
     http_response(201, body)
 }
 
@@ -491,30 +555,34 @@ fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
         return http_response(400, msg.into_bytes());
     }
 
-    let mut all = load_tickets();
-    let idx = match all.iter().position(|t| t.id == id) {
-        Some(i) => i,
-        None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
+    // Validation passed — hand the write to the singleton store. The store owns
+    // the id lookup (→ not_found), the #31 no-op guard, and the #32 updated_at
+    // bump; it returns the updated ticket plus the previous status.
+    let store_req = SetStatusStoreRequest {
+        op: "set_status",
+        id,
+        status: &req.status,
     };
-    // Idempotent no-op: setting a ticket to the status it already holds is a
-    // true no-op. Transitions are any-to-any, so this is a legitimate request
-    // (and even exercised by tests/status.sh's done -> done case) — return 200
-    // with the unchanged ticket, but skip the store rewrite and the
-    // notification emails. Only a genuine transition persists + notifies.
-    if all[idx].status == req.status {
-        let body = serde_json::to_vec(&all[idx]).unwrap_or_default();
-        return http_response(200, body);
-    }
+    let resp = match send_write(&store_req) {
+        Ok(r) => r,
+        Err(()) => return store_unavailable(),
+    };
+    let ticket = match write_ok_ticket(&resp) {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
 
-    let old_status = all[idx].status.clone();
-    all[idx].status = req.status;
-    all[idx].updated_at = timer_now();
-    let updated = all[idx].clone();
-    save_tickets(&all);
+    // Notify with the store-reported previous status so the email renders an
+    // accurate old -> new. On a no-op the store returns prev_status == current,
+    // so this is a same-state notification (any-to-any, matching today's model);
+    // fall back to the current status if the store omitted the field.
+    let prev_status = resp
+        .prev_status
+        .clone()
+        .unwrap_or_else(|| ticket.status.clone());
+    notify_status_changed(ticket, &prev_status);
 
-    notify_status_changed(&updated, &old_status);
-
-    let body = serde_json::to_vec(&updated).unwrap_or_default();
+    let body = serde_json::to_vec(ticket).unwrap_or_default();
     http_response(200, body)
 }
 
@@ -540,24 +608,31 @@ fn handle_add_comment(id_str: &str, request_str: &str) -> Vec<u8> {
         return http_response(400, br#"{"error":"author and body are required"}"#.to_vec());
     }
 
-    let mut all = load_tickets();
-    let idx = match all.iter().position(|t| t.id == id) {
-        Some(i) => i,
-        None => return http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
+    // Validation passed — hand the write to the singleton store. The store owns
+    // the id lookup (→ not_found), the comment's created_at, and the updated_at
+    // bump, and returns the updated ticket with the comment appended.
+    let store_req = AddCommentStoreRequest {
+        op: "add_comment",
+        id,
+        author: &req.author,
+        body: &req.body,
     };
-    let comment = Comment {
-        author: req.author,
-        body: req.body,
-        created_at: timer_now(),
+    let resp = match send_write(&store_req) {
+        Ok(r) => r,
+        Err(()) => return store_unavailable(),
     };
-    all[idx].comments.push(comment.clone());
-    all[idx].updated_at = timer_now();
-    let updated = all[idx].clone();
-    save_tickets(&all);
+    let ticket = match write_ok_ticket(&resp) {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
 
-    notify_comment_added(&updated, &comment);
+    // The store appended the comment; it's the last element of the returned
+    // ticket. Notify with it (silently skip if somehow absent).
+    if let Some(comment) = ticket.comments.last() {
+        notify_comment_added(ticket, comment);
+    }
 
-    let body = serde_json::to_vec(&updated).unwrap_or_default();
+    let body = serde_json::to_vec(ticket).unwrap_or_default();
     http_response(201, body)
 }
 
@@ -572,13 +647,55 @@ fn load_tickets() -> Vec<Ticket> {
     }
 }
 
-fn save_tickets(tickets: &[Ticket]) {
-    let json = serde_json::to_vec(tickets).unwrap_or_default();
-    let _ = store_store_at_label(
-        String::from(STORE_ID),
-        String::from(TICKETS_LIST_LABEL),
-        json,
-    );
+// ============================================================================
+// Write path — route to the singleton ticket-store.
+//
+// The handler no longer writes `tickets-list` directly (the TOCTOU race). Each
+// mutation is serialized into a tagged JSON request, sent to the store actor via
+// message-server-host.request, and the reply envelope is mapped back to HTTP.
+// ============================================================================
+
+/// Serialize a write request, route it to the singleton ticket-store, and parse
+/// the reply envelope. `Err(())` means the store is unreachable / not spawned,
+/// its id is unset (misconfiguration), or the reply was undecodable — each of
+/// which the caller turns into a 503. Never hangs, never silently succeeds.
+fn send_write<T: Serialize>(req: &T) -> Result<StoreResponse, ()> {
+    let store_id = HandlerState::with(|s| s.store_actor_id.clone());
+    if store_id.is_empty() {
+        log(String::from(
+            "[tickets-handler] write rejected: ticket-store id unset (misconfiguration)",
+        ));
+        return Err(());
+    }
+    let msg = serde_json::to_vec(req).map_err(|_| ())?;
+    let resp_bytes = request(store_id, msg).map_err(|e| {
+        log(format!("[tickets-handler] ticket-store request failed: {}", e));
+    })?;
+    let text = core::str::from_utf8(&resp_bytes).map_err(|_| ())?;
+    serde_json::from_str::<StoreResponse>(text).map_err(|_| ())
+}
+
+/// The 503 body sent whenever the store can't be reached / spoke garbage.
+fn store_unavailable() -> Vec<u8> {
+    http_response(503, br#"{"error":"ticket store unavailable"}"#.to_vec())
+}
+
+/// Interpret a store reply envelope. On a committed write returns the ticket;
+/// otherwise returns the HTTP error response bytes to send back:
+///   ok:false + "not_found"   → 404
+///   ok:false + anything else → 400 (shouldn't happen post-validation)
+///   ok:true but no ticket    → 503 (store returned a malformed success)
+fn write_ok_ticket(resp: &StoreResponse) -> Result<&Ticket, Vec<u8>> {
+    if !resp.ok {
+        return Err(match resp.error.as_deref() {
+            Some("not_found") => http_response(404, br#"{"error":"ticket not found"}"#.to_vec()),
+            _ => http_response(400, br#"{"error":"bad request"}"#.to_vec()),
+        });
+    }
+    match &resp.ticket {
+        Some(t) => Ok(t),
+        None => Err(store_unavailable()),
+    }
 }
 
 // ============================================================================
@@ -870,6 +987,7 @@ fn http_response(status: u16, body: Vec<u8>) -> Vec<u8> {
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        503 => "Service Unavailable",
         _ => "Error",
     };
     let header = format!(
