@@ -573,14 +573,17 @@ fn handle_set_status(id_str: &str, request_str: &str) -> Vec<u8> {
     };
 
     // Notify with the store-reported previous status so the email renders an
-    // accurate old -> new. On a no-op the store returns prev_status == current,
-    // so this is a same-state notification (any-to-any, matching today's model);
-    // fall back to the current status if the store omitted the field.
+    // accurate old -> new. Fall back to the current status if the store omitted
+    // the field. A no-op set (prev == current) persisted nothing on the store
+    // side and must NOT notify — that is the #31 behavior (no email spam on a
+    // same-status set); only a genuine transition notifies.
     let prev_status = resp
         .prev_status
         .clone()
         .unwrap_or_else(|| ticket.status.clone());
-    notify_status_changed(ticket, &prev_status);
+    if prev_status != ticket.status {
+        notify_status_changed(ticket, &prev_status);
+    }
 
     let body = serde_json::to_vec(ticket).unwrap_or_default();
     http_response(200, body)
