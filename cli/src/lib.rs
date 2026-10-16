@@ -152,6 +152,8 @@ struct CliCommand {
     #[serde(default)]
     assignee: Option<String>,
     #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
     status: Option<String>,
     #[serde(default)]
     author: Option<String>,
@@ -173,6 +175,8 @@ struct Ticket {
     reporter: String,
     assignee: String,
     status: String,
+    #[serde(default)]
+    project: String,
     created_at: u64,
     #[serde(default)]
     comments: Vec<Comment>,
@@ -223,6 +227,12 @@ fn run_list(req: &CliCommand) -> Result<(), String> {
         }
         query.push_str(&format!("reporter={}", url_encode(r)));
     }
+    if let Some(p) = &req.project {
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str(&format!("project={}", url_encode(p)));
+    }
     let path = if query.is_empty() {
         String::from("/v1/tickets")
     } else {
@@ -249,6 +259,8 @@ fn run_new(req: &CliCommand) -> Result<(), String> {
     let reporter = req.reporter.as_ref().ok_or("new: --reporter required")?;
     let assignee = req.assignee.as_ref().ok_or("new: --assignee required")?;
     let body = req.body.as_deref().unwrap_or("");
+    // Optional: omitted → "" (the handler also defaults a missing field to "").
+    let project = req.project.as_deref().unwrap_or("");
 
     #[derive(Serialize)]
     struct CreateBody<'a> {
@@ -256,12 +268,14 @@ fn run_new(req: &CliCommand) -> Result<(), String> {
         body: &'a str,
         reporter: &'a str,
         assignee: &'a str,
+        project: &'a str,
     }
     let body_json = serde_json::to_string(&CreateBody {
         title,
         body,
         reporter,
         assignee,
+        project,
     })
     .map_err(|e| format!("encode body: {}", e))?;
 
@@ -286,6 +300,9 @@ fn run_show(req: &CliCommand) -> Result<(), String> {
     out(&format!("title:    {}\n", t.title));
     out(&format!("reporter: {}\n", t.reporter));
     out(&format!("assignee: {}\n", t.assignee));
+    if !t.project.is_empty() {
+        out(&format!("project:  {}\n", t.project));
+    }
     out(&format!("created:  {}\n", epoch_ms_to_iso8601(t.created_at)));
     out("\n");
     out(&t.body);

@@ -40,9 +40,9 @@ usage() {
 usage: tickets <command> [args]
 
 commands:
-  list [--status S] [--assignee A] [--reporter R]
+  list [--status S] [--assignee A] [--reporter R] [--project P]
                                         list tickets, optionally filtered
-  new --title T --reporter R --assignee A [--body B]
+  new --title T --reporter R --assignee A [--body B] [--project P]
                                         create a new ticket
   show <id>                             show one ticket by id
   status <id> <new-status>              set status: open|in-progress|done|closed
@@ -90,12 +90,13 @@ build_state() {
 
 case "$cmd" in
   list)
-    status= assignee= reporter=
+    status= assignee= reporter= project=
     while [ $# -gt 0 ]; do
       case "$1" in
         --status) status=$2; shift 2 ;;
         --assignee) assignee=$2; shift 2 ;;
         --reporter) reporter=$2; shift 2 ;;
+        --project) project=$2; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -103,23 +104,27 @@ case "$cmd" in
     [ -n "$status" ] && args+=(status "$status")
     [ -n "$assignee" ] && args+=(assignee "$assignee")
     [ -n "$reporter" ] && args+=(reporter "$reporter")
+    [ -n "$project" ] && args+=(project "$project")
     state=$(build_state list "${args[@]+"${args[@]}"}")
     ;;
   new)
-    title= body= reporter= assignee=
+    title= body= reporter= assignee= project=
     while [ $# -gt 0 ]; do
       case "$1" in
         --title) title=$2; shift 2 ;;
         --body) body=$2; shift 2 ;;
         --reporter) reporter=$2; shift 2 ;;
         --assignee) assignee=$2; shift 2 ;;
+        --project) project=$2; shift 2 ;;
         *) usage ;;
       esac
     done
     [ -z "$title" ] && { echo "new: --title required" >&2; exit 2; }
     [ -z "$reporter" ] && { echo "new: --reporter required" >&2; exit 2; }
     [ -z "$assignee" ] && { echo "new: --assignee required" >&2; exit 2; }
-    state=$(build_state new title "$title" body "$body" reporter "$reporter" assignee "$assignee")
+    new_args=(title "$title" body "$body" reporter "$reporter" assignee "$assignee")
+    [ -n "$project" ] && new_args+=(project "$project")
+    state=$(build_state new "${new_args[@]}")
     ;;
   show)
     [ $# -lt 1 ] && usage

@@ -5,7 +5,7 @@
 //!
 //! Routes:
 //!   GET  /healthz                                       → liveness probe (unauthenticated)
-//!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=, ?reporter=)
+//!   GET  /v1/tickets                                    → list (optional ?status=, ?assignee=, ?reporter=, ?project=)
 //!   POST /v1/tickets                                    → create
 //!   GET  /v1/tickets/<id>                               → show one
 //!   POST /v1/tickets/<id>/status                        → set status
@@ -114,6 +114,12 @@ struct Ticket {
     reporter: String,
     assignee: String,
     status: String,
+    /// Project this ticket belongs to (e.g. "inbox", "tickets"). Lets the flat
+    /// list be scoped by `?project=`. Older stored tickets won't have this field
+    /// — `default` makes them deserialize as `""` (same back-compat trick as
+    /// `comments` / `updated_at`). Always serialized (no `skip_serializing_if`).
+    #[serde(default)]
+    project: String,
     created_at: u64,
     /// Last-activity timestamp: set equal to `created_at` on create, then
     /// bumped to `timer_now()` on every subsequent change (status transition,
@@ -140,6 +146,10 @@ struct NewTicketRequest {
     body: String,
     reporter: String,
     assignee: String,
+    /// Optional project scope. Omitted / empty → `""` (back-compat with
+    /// existing create requests that predate the project dimension).
+    #[serde(default)]
+    project: String,
 }
 
 #[derive(Deserialize)]
@@ -368,7 +378,7 @@ fn extract_bearer(request_str: &str) -> Option<String> {
 // ============================================================================
 
 fn handle_list(query: &str) -> Vec<u8> {
-    let (status_filter, assignee_filter, reporter_filter) = parse_query(query);
+    let (status_filter, assignee_filter, reporter_filter, project_filter) = parse_query(query);
     let all = load_tickets();
     let filtered: Vec<Ticket> = all
         .into_iter()
@@ -382,6 +392,10 @@ fn handle_list(query: &str) -> Vec<u8> {
         })
         .filter(|t| match &reporter_filter {
             Some(r) => &t.reporter == r,
+            None => true,
+        })
+        .filter(|t| match &project_filter {
+            Some(p) => &t.project == p,
             None => true,
         })
         .collect();
@@ -436,6 +450,7 @@ fn handle_create(request_str: &str) -> Vec<u8> {
         reporter: req.reporter,
         assignee: req.assignee,
         status: String::from("open"),
+        project: req.project,
         created_at: now,
         updated_at: now,
         comments: Vec::new(),
@@ -570,10 +585,11 @@ fn save_tickets(tickets: &[Ticket]) {
 // Helpers
 // ============================================================================
 
-fn parse_query(query: &str) -> (Option<String>, Option<String>, Option<String>) {
+fn parse_query(query: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let mut status = None;
     let mut assignee = None;
     let mut reporter = None;
+    let mut project = None;
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             let decoded = url_decode(v);
@@ -581,11 +597,12 @@ fn parse_query(query: &str) -> (Option<String>, Option<String>, Option<String>) 
                 "status" => status = Some(decoded),
                 "assignee" => assignee = Some(decoded),
                 "reporter" => reporter = Some(decoded),
+                "project" => project = Some(decoded),
                 _ => {}
             }
         }
     }
-    (status, assignee, reporter)
+    (status, assignee, reporter, project)
 }
 
 fn url_encode(s: &str) -> String {

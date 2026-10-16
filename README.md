@@ -11,8 +11,8 @@ New here? See [`AGENT-ONBOARDING.md`](AGENT-ONBOARDING.md) — 90-second intro f
 What works:
 
 - `GET /healthz` — unauthenticated liveness probe; returns `200 {"status":"ok"}`
-- `POST /v1/tickets` — create a ticket
-- `GET /v1/tickets[?status=&assignee=&reporter=]` — list, optionally filtered (filters AND together)
+- `POST /v1/tickets` — create a ticket (optional `project` field scopes it, e.g. `"inbox"` vs `"tickets"`; omitted → `""`)
+- `GET /v1/tickets[?status=&assignee=&reporter=&project=]` — list, optionally filtered (filters AND together)
 - `GET /v1/tickets/<id>` — show one
 - `POST /v1/tickets/<id>/status` — set status (`open`, `in-progress`, `done`, `closed`); any-to-any transitions
 - `POST /v1/tickets/<id>/comment` — append a comment (`{author, body}`)
@@ -69,9 +69,11 @@ echo dev-token-change-me > ~/.config/tickets/token
   --title "build the email bridge" \
   --body "notify the assignee's mailbox on create + status change" \
   --reporter claude@colinrozzi.com \
-  --assignee inbox-dev@colinrozzi.com
+  --assignee inbox-dev@colinrozzi.com \
+  --project tickets          # optional; scopes the ticket to a project
 
 ./cli/tickets list --status open --assignee inbox-dev@colinrozzi.com
+./cli/tickets list --project tickets   # only tickets in the "tickets" project
 
 ./cli/tickets show 1
 
