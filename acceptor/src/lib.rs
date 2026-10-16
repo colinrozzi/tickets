@@ -8,16 +8,22 @@
 //! the handler-manifest reference from `initial_state`) and transfers
 //! the connection.
 //!
+//! On startup it also spawns the singleton `ticket-store` (the serial writer of
+//! `tickets-list`) once, before binding the socket, and hands that actor-id to
+//! every handler it spawns so writes route through the store.
+//!
 //! Expected `initial_state` shape (single JSON string):
 //!   {"api_token":        "<tickets bearer>",
 //!    "inbox_api":        "host:port",
 //!    "inbox_token":      "<inbox bearer>",
-//!    "handler_manifest": "<file path | https:// | store:// reference>"}
+//!    "handler_manifest": "<file path | https:// | store:// reference>",
+//!    "store_manifest":   "<file path | https:// | store:// reference>"}
 //!
-//! `handler_manifest` is whatever `theater::utils::resolve_reference` will
-//! accept: a local file path for dev, an https URL for a released asset,
-//! or a store-content reference. The acceptor passes it through verbatim
-//! to `runtime.spawn` per connection.
+//! `handler_manifest` / `store_manifest` are whatever
+//! `theater::utils::resolve_reference` will accept: a local file path for dev,
+//! an https URL for a released asset, or a store-content reference. The acceptor
+//! passes `handler_manifest` through verbatim to `runtime.spawn` per connection,
+//! and `store_manifest` once at init to spawn the singleton store.
 
 #![no_std]
 extern crate alloc;
@@ -40,6 +46,10 @@ packr_guest::setup_guest!();
 pub struct AcceptorState {
     pub listener_id: String,
     pub handler_manifest: String,
+    /// Actor-id of the singleton `ticket-store`, spawned once in `init` and
+    /// passed as init-state to each per-connection handler so writes route
+    /// through the serial writer.
+    pub store_actor_id: String,
 }
 
 pack_types! {
@@ -174,6 +184,12 @@ struct Config {
     /// https:// URL, or a store:// reference. Set per-deploy so the
     /// acceptor is portable across dev + release.
     handler_manifest: String,
+    /// Reference to the `ticket-store` singleton manifest, resolved exactly like
+    /// `handler_manifest` (file path / https:// / store:// — whatever
+    /// `theater::utils::resolve_reference` accepts). The acceptor spawns the
+    /// store once at init and hands its actor-id to each handler so writes are
+    /// serialized by the single store actor. Set per-deploy.
+    store_manifest: String,
     /// Address the HTTP acceptor binds (e.g. "127.0.0.1:8456"). Optional:
     /// omitted falls back to `DEFAULT_LISTEN_ADDR`. Manifest-configurable so
     /// the prod port never collides with the inbox loopback convention + caddy
@@ -230,6 +246,9 @@ fn init(config: Value) -> Value {
     if cfg.handler_manifest.is_empty() {
         return err_result("acceptor: handler_manifest must be non-empty");
     }
+    if cfg.store_manifest.is_empty() {
+        return err_result("acceptor: store_manifest must be non-empty");
+    }
 
     if let Err(e) = persist(BEARER_TOKEN_LABEL, cfg.api_token) {
         return err_result(&e);
@@ -240,6 +259,19 @@ fn init(config: Value) -> Value {
     if let Err(e) = persist(INBOX_TOKEN_LABEL, cfg.inbox_token) {
         return err_result(&e);
     }
+
+    // Spawn the singleton ticket-store once, after persisting the labels and
+    // before binding the socket. It is the sole serial writer of tickets-list;
+    // the acceptor can't serve writes without it, so a spawn failure is fatal to
+    // init. Its id is handed to each per-connection handler as init-state below.
+    let store_actor_id = match runtime_spawn(cfg.store_manifest, None, None) {
+        Ok(id) => id,
+        Err(e) => return err_result(&format!("spawn ticket-store failed: {}", e)),
+    };
+    log(format!(
+        "[tickets-acceptor] spawned ticket-store singleton (id={})",
+        store_actor_id
+    ));
 
     let listen_addr = cfg
         .listen_addr
@@ -258,6 +290,7 @@ fn init(config: Value) -> Value {
     AcceptorState::set(AcceptorState {
         listener_id,
         handler_manifest: cfg.handler_manifest,
+        store_actor_id,
     });
     ok_unit()
 }
@@ -288,12 +321,17 @@ fn handle_connection(connection_id: String) -> Value {
 
 fn try_handle_connection(connection_id: &str) -> Result<(), String> {
     // runtime.spawn (the #204 lifecycle primitive) auto-calls the child's
-    // actor.init before returning the id. We pass None for init-state so
-    // the handler's manifest initial_state (none in our case) is used;
-    // the handler's init ignores its arg anyway.
-    let handler_manifest = AcceptorState::with(|s| s.handler_manifest.clone());
-    let handler_id = runtime_spawn(handler_manifest, None, None)
-        .map_err(|e| format!("spawn handler failed: {}", e))?;
+    // actor.init before returning the id. We pass the singleton ticket-store's
+    // actor-id as init-state (Value::String) so the handler can route writes to
+    // it; the handler reads it in `init` and holds it in HandlerState.
+    let (handler_manifest, store_actor_id) =
+        AcceptorState::with(|s| (s.handler_manifest.clone(), s.store_actor_id.clone()));
+    let handler_id = runtime_spawn(
+        handler_manifest,
+        Some(Value::String(store_actor_id)),
+        None,
+    )
+    .map_err(|e| format!("spawn handler failed: {}", e))?;
 
     if let Err(e) = tcp_transfer(connection_id.to_string(), handler_id.clone()) {
         let _ = runtime_stop_actor(handler_id);

@@ -14,11 +14,13 @@
 //! `actor.get-state`), and `register()`s with the message router so routed
 //! requests get delivered to `handle-request`.
 //!
-//! DORMANT: nothing calls this actor yet — the handler still writes the store
-//! directly. The mutation logic here is ported faithfully from
+//! As of the (b2) cutover slice the handler routes all writes here via
+//! `message-server-host.request`, so this actor is the live serial writer (no
+//! longer dormant). The mutation logic is ported faithfully from
 //! `ticket-handler`'s `handle_create` / `handle_set_status` / `handle_add_comment`
-//! (minus the HTTP + email-notification shells); the handler → store cutover is a
-//! later slice. This PR is purely additive.
+//! (minus the HTTP + email-notification shells). The cutover adds one thing to
+//! the wire contract: `set_status` now also returns `prev_status` so the handler
+//! can render an accurate status-change notification without a pre-read.
 
 #![no_std]
 extern crate alloc;
@@ -144,11 +146,23 @@ enum WriteRequest {
     },
 }
 
-/// Success envelope: `{"ok":true,"ticket":{<the ticket>}}`.
+/// Success envelope for create / add_comment: `{"ok":true,"ticket":{<the ticket>}}`.
 #[derive(Serialize)]
 struct OkResponse<'a> {
     ok: bool,
     ticket: &'a Ticket,
+}
+
+/// Success envelope for set_status: as `OkResponse` plus the status the ticket
+/// held *before* this call (`prev_status`). The handler needs it to render an
+/// accurate `old -> new` status-change notification without re-reading the
+/// store. For a no-op (requested status == current) `prev_status` equals the
+/// ticket's current status.
+#[derive(Serialize)]
+struct OkStatusResponse<'a> {
+    ok: bool,
+    ticket: &'a Ticket,
+    prev_status: &'a str,
 }
 
 /// Failure envelope: `{"ok":false,"error":"not_found"|"bad_request"}`.
@@ -296,19 +310,20 @@ fn handle_create(
 fn handle_set_status(id: u64, status: String) -> Vec<u8> {
     let updated = StoreState::with_mut(|s| {
         let idx = s.tickets.iter().position(|t| t.id == id)?;
+        let prev_status = s.tickets[idx].status.clone();
         // Idempotent no-op: setting the status a ticket already holds persists
-        // nothing — return the unchanged ticket.
+        // nothing — return the unchanged ticket (prev_status == current).
         if s.tickets[idx].status == status {
-            return Some(s.tickets[idx].clone());
+            return Some((s.tickets[idx].clone(), prev_status));
         }
         s.tickets[idx].status = status;
         s.tickets[idx].updated_at = timer_now();
         let updated = s.tickets[idx].clone();
         persist(&s.tickets);
-        Some(updated)
+        Some((updated, prev_status))
     });
     match updated {
-        Some(t) => success_response(&t),
+        Some((t, prev_status)) => status_success_response(&t, &prev_status),
         None => error_response("not_found"),
     }
 }
@@ -337,6 +352,15 @@ fn handle_add_comment(id: u64, author: String, body: String) -> Vec<u8> {
 
 fn success_response(ticket: &Ticket) -> Vec<u8> {
     serde_json::to_vec(&OkResponse { ok: true, ticket }).unwrap_or_default()
+}
+
+fn status_success_response(ticket: &Ticket, prev_status: &str) -> Vec<u8> {
+    serde_json::to_vec(&OkStatusResponse {
+        ok: true,
+        ticket,
+        prev_status,
+    })
+    .unwrap_or_default()
 }
 
 fn error_response(error: &str) -> Vec<u8> {

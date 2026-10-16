@@ -20,10 +20,14 @@ What works:
 - Bearer-token auth (single shared token); acceptor config now a JSON blob with `api_token` + inbox creds
 - Persistent storage via `theater:simple/store`
 
+Also landed (phase 2 / part 3): the singleton **`ticket-store`** serial writer
+mediates all writes, eliminating the TOCTOU race on `tickets-list` shared by
+create / status / comment. See [Architecture](#architecture).
+
 What's deferred to later phase 2 work:
 
-- Singleton `tickets-actor` to mediate writes (eliminates the TOCTOU race on `tickets-list` shared by create / status / comment)
 - Bridge dedup / retry
+- `ticket-store` supervision/respawn (acceptor captures the store id once at init; if the store dies, in-flight handlers hold a stale id → 503 until the acceptor respawns + re-publishes it — the design's §3 robustness item)
 
 Phase 3+:
 
@@ -89,22 +93,27 @@ Three actors:
 
 ```
 acceptor (singleton, :8443 HTTP)
+  ├── ticket-store (singleton, long-lived)      ← sole serial writer of tickets-list
   └── ticket-handler (one per HTTP connection, ephemeral)
-              ↓                          ↑ (outbound TLS)
-         theater:simple/store    inbox  /v1/mailboxes/<rcpt>/messages
-       (label: tickets-list → Vec<Ticket> as JSON)
+         │  writes: request/response message to ticket-store, awaits reply
+         │  reads:  direct store get-by-label (tickets-list is a committed snapshot)
+         ↓                          ↑ (outbound TLS)
+    theater:simple/store    inbox  /v1/mailboxes/<rcpt>/messages
+   (label: tickets-list → Vec<Ticket> as JSON)
 
 cli (one-shot, runs locally; talks HTTP+bearer to the acceptor)
 ```
 
-The `tickets-actor` singleton from the original design got dropped for phase 1 — handlers read/write the store directly. The current write path is still racy under contention (two handlers creating, transitioning, or commenting on tickets simultaneously can collide on `tickets-list`). The singleton lands in phase 2 / part 3.
+The **`ticket-store`** singleton (a fourth crate) is the serial writer of `tickets-list`: it owns id assignment + status / comment transitions + `updated_at` bumps, so concurrent writes are serialized by the single actor (the actor model is the mutex), eliminating the phase-1 TOCTOU race. The acceptor spawns it once at init and hands its actor-id to each per-connection handler. A handler no longer writes the store directly — for a mutation it sends a tagged JSON request to `ticket-store` via `message-server-host.request`, awaits the reply, fires the notification, and writes the HTTP response (503 if the store is unreachable). Reads (`GET /v1/tickets`, `GET /v1/tickets/<id>`) still hit the store label directly in the handler, since `ticket-store` is the only writer and a label read is an atomic read of the last committed value. Notifications stay in the handler so the serialized write path is never blocked on an outbound POST.
 
-A fourth crate, **`ticket-store`**, is the forthcoming singleton serial writer of `tickets-list` (it owns id assignment + status / comment transitions so they're serializable, eliminating that TOCTOU race). As of this slice it has its **write path**: it's a message-server receiver — on `actor.init` it loads `tickets-list` into in-module state, `register()`s with the message router, and exposes `actor.get-state`, and its `handle-request` applies create / set-status / add-comment to the in-module list and persists each change back to `tickets-list`. It's still **dormant**: nothing routes to it yet — handlers keep writing the store directly until the handler → store cutover slice.
+## Phase 2 part 3 — landed
 
-## Phase 2 part 3 sketch
+The singleton `ticket-store` mediates writes so id assignment + status / comment
+transitions + `updated_at` bumps are serializable (see [Architecture](#architecture)).
+Still open from this phase:
 
-- A singleton `tickets-actor` mediates writes so id assignment + status / comment transitions are serializable
 - Bridge dedup or retry on transient inbox-API failures (currently best-effort, one-shot)
+- `ticket-store` supervision/respawn (design §3)
 
 ## Phase 3 sketch
 
