@@ -1,0 +1,19 @@
+name = "tickets-store"
+version = "0.1.0"
+package = "/home/colin/work/actors/tickets/target/wasm32-unknown-unknown/release/tickets_store.wasm"
+static_package = true
+# The store handler intentionally omits `base_path`: theater falls back to
+# `$THEATER_HOME/store/<store_id>`. store_id matches the acceptor's/handler's,
+# so this singleton shares the same backing store as long as it runs under the
+# same THEATER_HOME (default `$HOME/.theater`).
+#
+# Scaffold slice: `self` (log) + `store` (read `tickets-list`) only. No tcp /
+# client_tls / message-server yet — the later cutover slice adds the message
+# handlers once the inter-actor ABI is pinned.
+
+[[handler]]
+type = "self"
+
+[[handler]]
+type = "store"
+store_id = "tickets"

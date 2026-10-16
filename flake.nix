@@ -83,7 +83,7 @@
           # surface (host theater:simple/* only) is asserted by the CI verify job.
           installPhaseCommand = ''
             mkdir -p $out
-            for name in tickets_acceptor tickets_handler tickets_cli; do
+            for name in tickets_acceptor tickets_handler tickets_cli tickets_store; do
               cp "target/wasm32-unknown-unknown/release/$name.wasm" "$out/$name.wasm"
             done
           '';
