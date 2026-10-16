@@ -1,5 +1,5 @@
 [workspace]
-members = ["acceptor", "cli", "ticket-handler"]
+members = ["acceptor", "cli", "ticket-handler", "ticket-store"]
 resolver = "2"
 
 [profile.release]
