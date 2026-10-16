@@ -58,6 +58,15 @@ The `initial_state` field in `acceptor/manifest.toml` is a JSON blob — populat
 
 `handler_manifest` is passed verbatim to `supervisor.spawn` on each new connection. For dev that's `ticket-handler/manifest.toml`; for a release deploy that's the `ticket-handler-<date>-<sha>.toml` asset shipped alongside the wasms (its `package` URL points back at the same release's handler wasm).
 
+## Tests
+
+Integration tests live in [`tests/`](tests) — bash + curl against a running
+server (not run by CI; point them at a live `theater spawn`). Notably,
+[`tests/concurrency.sh`](tests/concurrency.sh) is the behavioral proof of the
+singleton write-serialization cutover (#40): it fires many concurrent creates /
+comments / status sets and asserts no lost updates (unique ids, no clobbered
+writes).
+
 ## CLI
 
 The bash wrapper at `cli/tickets` is the ergonomic surface. It:
