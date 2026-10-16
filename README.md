@@ -99,7 +99,7 @@ cli (one-shot, runs locally; talks HTTP+bearer to the acceptor)
 
 The `tickets-actor` singleton from the original design got dropped for phase 1 — handlers read/write the store directly. The current write path is still racy under contention (two handlers creating, transitioning, or commenting on tickets simultaneously can collide on `tickets-list`). The singleton lands in phase 2 / part 3.
 
-A fourth crate, **`ticket-store`**, is the forthcoming singleton serial writer of `tickets-list` (it will own id assignment + status / comment transitions so they're serializable, eliminating that TOCTOU race). As of this slice it's only a **scaffold**: on `actor.init` it loads `tickets-list` into in-module state and exposes `actor.get-state` — no HTTP, no messaging, no writes yet. The write-path cutover is a later slice.
+A fourth crate, **`ticket-store`**, is the forthcoming singleton serial writer of `tickets-list` (it owns id assignment + status / comment transitions so they're serializable, eliminating that TOCTOU race). As of this slice it has its **write path**: it's a message-server receiver — on `actor.init` it loads `tickets-list` into in-module state, `register()`s with the message router, and exposes `actor.get-state`, and its `handle-request` applies create / set-status / add-comment to the in-module list and persists each change back to `tickets-list`. It's still **dormant**: nothing routes to it yet — handlers keep writing the store directly until the handler → store cutover slice.
 
 ## Phase 2 part 3 sketch
 
