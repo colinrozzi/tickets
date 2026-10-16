@@ -7,9 +7,11 @@ static_package = true
 # so this singleton shares the same backing store as long as it runs under the
 # same THEATER_HOME (default `$HOME/.theater`).
 #
-# Scaffold slice: `self` (log) + `store` (read `tickets-list`) only. No tcp /
-# client_tls / message-server yet — the later cutover slice adds the message
-# handlers once the inter-actor ABI is pinned.
+# Write-path slice (b1): `self` (log) + `store` (read + store-at-label on
+# `tickets-list`) + `message-server` (so `register()` works and routed write
+# requests reach `handle-request`). The timer + message-server-host imports are
+# host functions and need no manifest handler. Still dormant — nothing routes to
+# this actor until the handler → store cutover slice.
 
 [[handler]]
 type = "self"
@@ -17,3 +19,6 @@ type = "self"
 [[handler]]
 type = "store"
 store_id = "tickets"
+
+[[handler]]
+type = "message-server"
