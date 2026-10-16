@@ -704,15 +704,42 @@ fn notify_comment_added(t: &Ticket, c: &Comment) {
     }
 }
 
+/// How many times `deliver` attempts `try_deliver` before giving up.
+const NOTIFY_MAX_ATTEMPTS: u32 = 3;
+
 /// Fire one notification email. Best-effort: log + carry on. Never fails the
 /// caller — the ticket-side state change has already happened.
+///
+/// Retries a small, bounded number of times so a single transient blip
+/// (connect refused, dropped TLS connection, a 5xx from the inbox API)
+/// doesn't silently drop the notification. The whole `try_deliver` call is
+/// retried so the TCP/TLS connection is re-established each attempt. There is
+/// no delay between attempts: the guest has no sleep host-call and the
+/// per-connection handler actor is sequential, so a busy-wait would block it.
+/// (A delayed/backoff retry would need a host sleep primitive — tracked as a
+/// possible follow-up.) The `status == 0` "TLS closed without close_notify"
+/// quirk is treated as delivered by `try_deliver` (returns `Ok`), so it does
+/// not retry.
 fn deliver(recipient: &str, subject: &str, body: &str) {
-    if let Err(e) = try_deliver(recipient, subject, body) {
-        log(format!(
-            "[tickets-handler] notify {} failed: {}",
-            recipient, e
-        ));
+    let mut last_err = String::new();
+    for attempt in 1..=NOTIFY_MAX_ATTEMPTS {
+        match try_deliver(recipient, subject, body) {
+            Ok(()) => {
+                if attempt > 1 {
+                    log(format!(
+                        "[tickets-handler] notify {} succeeded on attempt {}/{}",
+                        recipient, attempt, NOTIFY_MAX_ATTEMPTS
+                    ));
+                }
+                return;
+            }
+            Err(e) => last_err = e,
+        }
     }
+    log(format!(
+        "[tickets-handler] notify {} failed after {} attempts: {}",
+        recipient, NOTIFY_MAX_ATTEMPTS, last_err
+    ));
 }
 
 fn try_deliver(recipient: &str, subject: &str, body: &str) -> Result<(), String> {
